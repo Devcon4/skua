@@ -1,0 +1,7 @@
+apiVersion: skua.dev/v1alpha1
+kind: AgentProfile
+metadata:
+  name: generic
+spec:
+  agent:
+    image: ghcr.io/devcon4/skua-agent-generic:<version>@sha256:<generic-image-digest>

@@ -1,0 +1,59 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+        with:
+          version: 2026.11.1
+          install_args: go golangci-lint helm kustomize shellcheck zizmor go:sigs.k8s.io/controller-tools/cmd/controller-gen
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-${{ runner.os }}-${{ hashFiles('go.sum', 'mise.toml') }}
+          restore-keys: go-${{ runner.os }}-
+      - run: make generate manifests
+      - run: make build
+      - run: make lint
+      - name: Generated code and CRDs are committed
+        run: |
+          git diff --exit-code
+          test -z "$(git status --porcelain)"
+      - run: make test
+      - run: make helm-lint test-chart crds-bundle lint-ci
+
+  extension:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26.13.0
+          cache: npm
+          cache-dependency-path: extension/dev/package-lock.json
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+        with:
+          version: 2026.11.1
+          install_args: oh-my-pi
+      - run: make test-extension

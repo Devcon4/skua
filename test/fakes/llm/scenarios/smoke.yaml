@@ -1,0 +1,4 @@
+name: smoke
+match: SKUA-E2E-SMOKE
+turns:
+  - text: smoke reply from fakellm

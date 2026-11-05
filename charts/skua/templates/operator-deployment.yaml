@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: skua-operator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: skua-operator
+    {{- include "skua.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: skua-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: skua-operator
+        {{- include "skua.podLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include "skua.config" . | sha256sum }}
+        {{- with .Values.operator.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: skua-operator
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "skua.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: skua
+          image: {{ include "skua.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["operator"]
+          env:
+            - name: SKUA_CONFIG
+              valueFrom:
+                configMapKeyRef:
+                  name: skua-config
+                  key: config.yaml
+          ports:
+            - name: metrics
+              containerPort: 8080
+            - name: health
+              containerPort: 8081
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            periodSeconds: 5
+          securityContext:
+            {{- include "skua.containerSecurityContext" . | nindent 12 }}
+          {{- with .Values.operator.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.operator.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.operator.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.operator.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

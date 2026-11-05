@@ -1,0 +1,5 @@
+image:
+  repository: ghcr.io/dexidp/dex
+  tag: v2.46.1
+service:
+  type: NodePort

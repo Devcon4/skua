@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: skua-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "skua.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    {{- include "skua.config" . | nindent 4 }}

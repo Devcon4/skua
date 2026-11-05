@@ -1,0 +1,24 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  podSubnet: 10.244.0.0/16
+  serviceSubnet: 10.96.0.0/16
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runsc]
+      runtime_type = "io.containerd.runsc.v1"
+    [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runsc.options]
+      TypeUrl = "io.containerd.runsc.v1.options"
+      ConfigPath = "/etc/containerd/runsc.toml"
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 32000
+        hostPort: 32000
+        listenAddress: 127.0.0.1
+      - containerPort: 32080
+        hostPort: 32080
+        listenAddress: 127.0.0.1
+      - containerPort: 32040
+        hostPort: 32040
+        listenAddress: 127.0.0.1

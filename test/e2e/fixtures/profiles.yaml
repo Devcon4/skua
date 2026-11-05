@@ -1,0 +1,16 @@
+apiVersion: skua.dev/v1alpha1
+kind: AgentProfile
+metadata:
+  name: fake
+spec:
+  description: Scripted fake omp agent for the e2e tests.
+  image: skua-e2e-fakeagent:dev
+  command: [fakeomp, --mode, rpc, --listen, ":8080"]
+  models: [e2e-primary, e2e-helper]
+  forge: github
+  workspace:
+    size: 1Gi
+  warmPool:
+    replicas: 2
+  limits:
+    maxRuntime: 30m

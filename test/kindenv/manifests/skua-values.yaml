@@ -1,0 +1,51 @@
+image:
+  repository: skua
+  tag: dev
+  pullPolicy: IfNotPresent
+
+api:
+  service:
+    type: NodePort
+    port: 80
+    nodePort: 32080
+
+# kindenv up creates skua-sandboxes before the deploy step, so Helm must not own it.
+sandboxNamespace:
+  create: false
+
+config:
+  runNamespace: skua
+  sandboxNamespace: skua-sandboxes
+  oidc:
+    issuerURL: http://dex.127.0.0.1.nip.io:32000
+    audience: skua-omp
+  gateway:
+    baseURL: http://litellm.gateway.svc:4000
+    operatorKeySecret:
+      namespace: skua-system
+      name: skua-litellm-operator
+      key: apiKey
+    egress:
+      namespace: gateway
+      podLabels:
+        app: litellm
+      port: 4000
+  github:
+    appSecret:
+      namespace: flux-system
+      name: skua-test-github-app
+    apiURL: http://skua-e2e-forge.skua-e2e.svc:8080
+    gitURL: http://skua-e2e-forge.skua-e2e.svc:8080
+  network:
+    extraEgress:
+      - namespace: skua-e2e
+        podLabels:
+          app: skua-e2e-forge
+        port: 8080
+  defaults:
+    runtimeClassName: gvisor
+  retention:
+    afterFetch: 24h
+    max: 168h
+  runner:
+    supportedVersions: ">=0.1.0-0 <0.2.0"

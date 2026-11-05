@@ -1,0 +1,62 @@
+# Image for both control-plane Deployments and, unless config.runner.image is set, for the runner init container.
+# tag "" means the chart's appVersion; digest (sha256:<64 hex>) wins over tag when set.
+image:
+  repository: ghcr.io/devcon4/skua
+  tag: ""
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+operator:
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+
+api:
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  service:
+    type: ClusterIP
+    port: 80
+    nodePort: null
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: ""
+  tls:
+    secretName: ""
+
+httpRoute:
+  enabled: false
+  annotations: {}
+  parentRefs: []
+  hostnames: []
+
+# Creates config.sandboxNamespace with the restricted Pod Security labels. Helm keeps it on uninstall.
+sandboxNamespace:
+  create: true
+
+# The skua configuration, rendered into ConfigMap skua-config key config.yaml.
+# The chart fills runNamespace, runner.image, runner.supportedVersions, api.runnerURL and api.egress when unset.
+# Required: oidc, gateway.baseURL, gateway.operatorKeySecret.{name,key}, gateway.egress, network.{podCIDRs,serviceCIDRs,nodeCIDRs}.
+config:
+  oidc:
+    issuerURL: ""
+    audience: ""
+  gateway:
+    baseURL: ""
+    operatorKeySecret:
+      name: ""
+      key: ""
+  network:
+    podCIDRs: []
+    serviceCIDRs: []
+    nodeCIDRs: []

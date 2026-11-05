@@ -1,0 +1,9 @@
+skua {{ .Chart.AppVersion }} is installed in namespace {{ .Release.Namespace }}.
+
+This chart ships no CRDs. Apply the matching CRDs before the first install and before every upgrade:
+
+  kubectl apply --server-side -f https://github.com/Devcon4/skua/releases/download/v{{ .Chart.AppVersion }}/skua-crds.yaml
+
+Then check that the operator reports your profiles:
+
+  kubectl get agentprofiles

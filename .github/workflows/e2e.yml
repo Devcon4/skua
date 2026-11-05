@@ -1,0 +1,75 @@
+name: e2e
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: e2e (${{ matrix.deploy }}, ${{ matrix.node }})
+    runs-on: ${{ vars.SKUA_E2E_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include: >-
+          ${{ fromJSON(github.event_name == 'pull_request'
+          && '[{"deploy":"helm","node":"default"}]'
+          || '[{"deploy":"helm","node":"default"},{"deploy":"kustomize","node":"kindest/node:v1.29.14@sha256:8703bd94ee24e51b778d5556ae310c6c0fa67d761fae6379c8e0bb480e6fea29"}]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+        with:
+          version: 2026.11.1
+          install_args: go helm kubectl kustomize kind
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-${{ runner.os }}-${{ hashFiles('go.sum', 'mise.toml') }}
+          restore-keys: go-${{ runner.os }}-
+
+      - uses: ./.github/actions/kind-prereqs
+
+      - name: Start the kind footprint sampler
+        run: go run ./tools/kindenv footprint start
+
+      - name: make test-e2e
+        env:
+          DEPLOY: ${{ matrix.deploy }}
+          NODE_IMAGE: ${{ matrix.node != 'default' && matrix.node || '' }}
+        run: |
+          set -o pipefail
+          E2E_KEEP=1 SKUA_GVISOR=runsc SKUA_KIND_NODE_IMAGE="$NODE_IMAGE" make test-e2e SKUA_DEPLOY="$DEPLOY" 2>&1 | tee "$RUNNER_TEMP/e2e.log"
+
+      - name: Record the kind footprint
+        if: always()
+        run: go run ./tools/kindenv footprint stop
+
+      - name: Export kind logs
+        if: failure()
+        run: go run ./tools/kindenv logs -name skua-dev "$RUNNER_TEMP/kind-logs"
+
+      - name: Upload e2e and kind logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-logs-${{ matrix.deploy }}-${{ strategy.job-index }}
+          path: |
+            ${{ runner.temp }}/e2e.log
+            ${{ runner.temp }}/kind-logs
+          if-no-files-found: ignore
+
+      - name: make kind-down
+        if: always()
+        run: make kind-down

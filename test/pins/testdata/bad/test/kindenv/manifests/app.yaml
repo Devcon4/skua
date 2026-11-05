@@ -1,0 +1,5 @@
+containers:
+  - name: app
+    image: busybox:1.37
+  - name: templated
+    image: ${APP_IMAGE}

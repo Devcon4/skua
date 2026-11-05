@@ -1,0 +1,77 @@
+name: install-checks
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - test/install/**
+      - test/kindenv/**
+      - docs/install/examples/flux/**
+
+permissions:
+  contents: read
+
+jobs:
+  agent-sandbox-upgrade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+        with:
+          version: 2026.11.1
+          install_args: go helm kubectl kind flux2
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-${{ runner.os }}-${{ hashFiles('go.sum', 'mise.toml') }}
+          restore-keys: go-${{ runner.os }}-
+      - uses: ./.github/actions/kind-prereqs
+      - run: make check-agent-sandbox-upgrade
+
+  flux-example:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+        with:
+          version: 2026.11.1
+          install_args: go helm kubectl kind flux2
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-${{ runner.os }}-${{ hashFiles('go.sum', 'mise.toml') }}
+          restore-keys: go-${{ runner.os }}-
+      - uses: ./.github/actions/kind-prereqs
+      - run: make check-flux-example
+
+  ingress-stream:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+        with:
+          version: 2026.11.1
+          install_args: go helm kubectl kind flux2
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-${{ runner.os }}-${{ hashFiles('go.sum', 'mise.toml') }}
+          restore-keys: go-${{ runner.os }}-
+      - uses: ./.github/actions/kind-prereqs
+      - name: make check-ingress-stream (90 s stream)
+        run: make check-ingress-stream

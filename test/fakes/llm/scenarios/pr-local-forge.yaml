@@ -1,0 +1,20 @@
+name: pr-local-forge
+match: "FAKELLM:pr-local-forge"
+turns:
+  - toolCalls:
+      - name: bash
+        arguments:
+          command: printf 'Hello from a skua run.\n' > HELLO.md && git add HELLO.md && git commit -q -m 'Add HELLO.md'
+  - toolCalls:
+      - name: bash
+        arguments:
+          command: git push origin "HEAD:skua/$SKUA_RUN"
+  - toolCalls:
+      - name: bash
+        arguments:
+          command: >-
+            curl -fsS -X POST "$SKUA_FORGE_API_URL/repos/$SKUA_REPO/pulls"
+            -H "Authorization: Bearer $(sed -n 's/.*"token":"\([^"]*\)".*/\1/p' "$SKUA_FORGE_TOKEN_FILE")"
+            -H 'Content-Type: application/json'
+            -d "{\"title\":\"Add HELLO.md\",\"head\":\"skua/$SKUA_RUN\",\"base\":\"main\"}"
+  - text: Added HELLO.md on the run branch and opened a pull request.

@@ -1,0 +1,50 @@
+image:
+  tag: v2.46.1
+  digest: sha256:65b72ca0f4b0bf6d4ada84ec21da8851782563404ac7b8f926923d27ceced9ab
+service:
+  type: NodePort
+  ports:
+    http:
+      port: 32000
+      nodePort: 32000
+envVars:
+  - name: DEX_ADMIN_HASH
+    valueFrom:
+      secretKeyRef:
+        name: dex-test-users
+        key: admin-hash
+  - name: DEX_DEV_HASH
+    valueFrom:
+      secretKeyRef:
+        name: dex-test-users
+        key: dev-hash
+config:
+  issuer: http://dex.127.0.0.1.nip.io:32000
+  storage:
+    type: memory
+  web:
+    http: 0.0.0.0:5556
+  oauth2:
+    skipApprovalScreen: true
+    passwordConnector: local
+  enablePasswordDB: true
+  staticClients:
+    - id: skua-omp
+      name: skua omp extension
+      public: true
+      redirectURIs:
+        - http://127.0.0.1:8085/callback
+        - http://localhost:8085/callback
+        - http://127.0.0.1:38080/callback
+        - http://dex.127.0.0.1.nip.io:32000/device/callback
+  staticPasswords:
+    - email: admin@skua.test
+      username: admin
+      userID: 7f0c2a64-6a0e-4b0b-9a31-0a3d1f1d0001
+      hashFromEnv: DEX_ADMIN_HASH
+      groups: [skua-admins, skua-users]
+    - email: dev@skua.test
+      username: dev
+      userID: 7f0c2a64-6a0e-4b0b-9a31-0a3d1f1d0002
+      hashFromEnv: DEX_DEV_HASH
+      groups: [skua-users]

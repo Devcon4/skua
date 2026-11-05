@@ -1,0 +1,25 @@
+runNamespace: skua
+sandboxNamespace: skua-sandboxes
+oidc:
+  issuerURL: http://dex.127.0.0.1.nip.io:32000
+  audience: skua-omp
+gateway:
+  baseURL: http://litellm.gateway.svc:4000
+  operatorKeySecret: {namespace: skua-system, name: skua-litellm-operator, key: apiKey}
+  egress: {namespace: gateway, podLabels: {app: litellm}, port: 4000}
+api:
+  runnerURL: http://skua-api.skua.svc
+  egress: {namespace: skua, podLabels: {app.kubernetes.io/name: skua-api}, port: 8080}
+github:
+  appSecret: {namespace: flux-system, name: skua-test-github-app}
+  apiURL: http://skua-e2e-forge.skua-e2e.svc:8080
+  gitURL: http://skua-e2e-forge.skua-e2e.svc:8080
+network:
+  podCIDRs: [${SKUA_POD_CIDR}]
+  serviceCIDRs: [${SKUA_SERVICE_CIDR}]
+  nodeCIDRs: [${SKUA_NODE_CIDR}]
+  extraEgress:
+    - {namespace: skua-e2e, podLabels: {app: skua-e2e-forge}, port: 8080}
+defaults: {runtimeClassName: gvisor}
+retention: {afterFetch: 24h, max: 168h}
+runner: {image: "skua:dev", supportedVersions: ">=0.1.0-0 <0.2.0"}

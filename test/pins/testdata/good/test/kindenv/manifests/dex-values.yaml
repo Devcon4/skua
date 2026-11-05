@@ -1,0 +1,8 @@
+image:
+  repository: ghcr.io/dexidp/dex
+  # pinned
+  tag: v2.46.1
+
+  digest: sha256:65b72ca0f4b0bf6d4ada84ec21da8851782563404ac7b8f926923d27ceced9ab
+service:
+  type: NodePort

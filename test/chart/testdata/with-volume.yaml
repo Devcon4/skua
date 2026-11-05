@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: skua-api
+  namespace: skua
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: skua-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: skua-api
+    spec:
+      initContainers:
+        - name: prepare
+          image: ghcr.io/devcon4/skua:0.0.0-dev
+          volumeMounts:
+            - name: scratch
+              mountPath: /scratch
+      containers:
+        - name: skua
+          image: ghcr.io/devcon4/skua:0.0.0-dev
+          args: ["api"]
+          volumeMounts:
+            - name: scratch
+              mountPath: /tmp
+      volumes:
+        - name: scratch
+          emptyDir: {}

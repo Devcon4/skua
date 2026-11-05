@@ -1,0 +1,33 @@
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: survivor
+  namespace: skua-r2
+spec:
+  podTemplate:
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: agent
+          image: ${BUSYBOX_IMAGE}
+          command: [sleep, infinity]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+---
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxWarmPool
+metadata:
+  name: survivor
+  namespace: skua-r2
+spec:
+  replicas: 1
+  sandboxTemplateRef:
+    name: survivor

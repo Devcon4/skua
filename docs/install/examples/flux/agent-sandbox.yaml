@@ -1,0 +1,70 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: agent-sandbox
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://github.com/kubernetes-sigs/agent-sandbox
+  ref:
+    tag: v1.0.9
+  ignore: |
+    /*
+    !/helm/
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: agent-sandbox-crds
+  namespace: flux-system
+spec:
+  interval: 1h
+  sourceRef: { kind: GitRepository, name: agent-sandbox }
+  path: ./helm/crds
+  prune: false
+  wait: true
+  timeout: 5m
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: agent-sandbox
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: agent-sandbox-crds
+  interval: 1h
+  sourceRef: { kind: GitRepository, name: flux-system }
+  path: ./infrastructure/agent-sandbox
+  prune: true
+  wait: true
+  timeout: 5m
+---
+# Commit this HelmRelease under ./infrastructure/agent-sandbox in the flux-system repository.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: agent-sandbox
+  namespace: flux-system
+spec:
+  interval: 1h
+  releaseName: agent-sandbox
+  targetNamespace: agent-sandbox-system
+  chart:
+    spec:
+      chart: ./helm
+      sourceRef:
+        kind: GitRepository
+        name: agent-sandbox
+  install:
+    crds: Skip
+    createNamespace: true
+  upgrade:
+    crds: Skip
+  values:
+    namespace:
+      create: false
+    image:
+      tag: v1.0.9
+    controller:
+      extensions: true

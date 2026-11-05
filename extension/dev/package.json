@@ -1,0 +1,11 @@
+{
+  "name": "skua-omp-extension-dev",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@oh-my-pi/pi-ai": "18.16.0",
+    "@oh-my-pi/pi-coding-agent": "18.16.0",
+    "@types/node": "26.6.6",
+    "@typescript/native-preview": "7.0.0-dev.20260707.2"
+  }
+}

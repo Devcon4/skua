@@ -1,0 +1,129 @@
+image:
+  repository: ghcr.io/devcon4/skua
+  tag: 0.1.0
+  digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  pullPolicy: Always
+
+imagePullSecrets:
+  - name: ghcr-pull
+
+operator:
+  resources:
+    requests: {cpu: 20m, memory: 64Mi}
+    limits: {memory: 256Mi}
+  nodeSelector:
+    kubernetes.io/os: linux
+  tolerations:
+    - key: dedicated
+      operator: Equal
+      value: control-plane
+      effect: NoSchedule
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - {key: kubernetes.io/arch, operator: In, values: [amd64, arm64]}
+  podAnnotations:
+    example.com/team: platform
+
+api:
+  resources:
+    requests: {cpu: 20m, memory: 64Mi}
+    limits: {memory: 256Mi}
+  nodeSelector:
+    kubernetes.io/os: linux
+  tolerations:
+    - key: dedicated
+      operator: Equal
+      value: control-plane
+      effect: NoSchedule
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - {key: kubernetes.io/arch, operator: In, values: [amd64, arm64]}
+  podAnnotations:
+    example.com/team: platform
+  service:
+    type: NodePort
+    port: 80
+    nodePort: 32080
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+  host: skua.example.com
+  tls:
+    secretName: skua-api-tls
+
+httpRoute:
+  enabled: true
+  annotations:
+    example.com/route: skua
+  parentRefs:
+    - name: public
+      namespace: gateway-system
+      sectionName: https
+  hostnames:
+    - skua.example.com
+
+sandboxNamespace:
+  create: true
+
+config:
+  runNamespace: skua
+  sandboxNamespace: skua-sandboxes
+  oidc:
+    issuerURL: https://login.example.com
+    audience: skua-omp
+  gateway:
+    baseURL: http://litellm.gateway.svc:4000
+    operatorKeySecret:
+      namespace: skua-system
+      name: skua-litellm-operator
+      key: apiKey
+    egress:
+      namespace: gateway
+      podLabels:
+        app: litellm
+      port: 4000
+  api:
+    runnerURL: http://skua-api.skua.svc
+    egress:
+      namespace: skua
+      podLabels:
+        app.kubernetes.io/name: skua-api
+      port: 8080
+  github:
+    appSecret:
+      namespace: flux-system
+      name: skua-github-app
+      appIDKey: githubAppID
+      installationIDKey: githubAppInstallationID
+      privateKeyKey: githubAppPrivateKey
+    apiURL: https://api.github.com
+    gitURL: https://github.com
+  network:
+    podCIDRs: [10.244.0.0/16, "fd00:10:244::/56"]
+    serviceCIDRs: [10.96.0.0/12, "fd00:10:96::/112"]
+    nodeCIDRs: [192.168.10.0/24]
+    extraEgress:
+      - namespace: forge
+        podLabels:
+          app: forge
+        port: 443
+  defaults:
+    runtimeClassName: gvisor
+  retention:
+    afterFetch: 24h
+    max: 168h
+  runner:
+    image: ghcr.io/devcon4/skua@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    supportedVersions: ">=0.1.0-0 <0.2.0"
+  agentSandbox:
+    namespace: agent-sandbox-system

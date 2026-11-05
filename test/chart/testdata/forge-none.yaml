@@ -1,0 +1,36 @@
+image:
+  repository: ghcr.io/devcon4/skua
+  tag: 0.1.0
+
+api:
+  service:
+    type: ClusterIP
+    port: 80
+
+sandboxNamespace:
+  create: true
+
+config:
+  oidc:
+    issuerURL: https://login.example.com
+    audience: skua-omp
+  gateway:
+    baseURL: http://litellm.gateway.svc:4000
+    operatorKeySecret:
+      namespace: litellm-keys
+      name: skua-litellm-operator
+      key: apiKey
+    egress:
+      namespace: gateway
+      podLabels:
+        app: litellm
+      port: 4000
+  network:
+    podCIDRs: [10.244.0.0/16]
+    serviceCIDRs: [10.96.0.0/12]
+    nodeCIDRs: [192.168.10.0/24]
+  defaults:
+    runtimeClassName: gvisor
+  retention:
+    afterFetch: 12h
+    max: 72h

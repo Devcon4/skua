@@ -1,0 +1,39 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: skua-api
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: skua-api
+    {{- include "skua.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .Values.ingress.tls.secretName }}
+  tls:
+    - secretName: {{ .Values.ingress.tls.secretName }}
+      {{- with .Values.ingress.host }}
+      hosts:
+        - {{ . | quote }}
+      {{- end }}
+  {{- end }}
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: skua-api
+                port:
+                  name: http
+      {{- with .Values.ingress.host }}
+      host: {{ . | quote }}
+      {{- end }}
+{{- end }}
