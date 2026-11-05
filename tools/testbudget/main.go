@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"slices"
@@ -47,6 +48,20 @@ func main() {
 		flag.Usage()
 		os.Exit(2)
 	}
+
+	// The budget measures running tests, not compiling them: a cold build cache would otherwise decide the result.
+	buildStart := time.Now()
+	build := exec.Command("go", append([]string{"test", "-run", "^$"}, flag.Args()...)...)
+	build.Stdout = io.Discard
+	build.Stderr = os.Stderr
+	if err := build.Run(); err != nil {
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
+			os.Exit(exitErr.ExitCode())
+		}
+		fmt.Fprintf(os.Stderr, "testbudget: build tests: %v\n", err)
+		os.Exit(2)
+	}
+	fmt.Printf("built test binaries in %.1fs (not counted)\n", time.Since(buildStart).Seconds())
 
 	cmd := exec.Command("go", append([]string{"test", "-json"}, flag.Args()...)...)
 	cmd.Stderr = os.Stderr

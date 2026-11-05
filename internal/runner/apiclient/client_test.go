@@ -318,9 +318,9 @@ func TestFailedEventPostsStayInOutboxUntilAcked(t *testing.T) {
 	o.backoffMin = 200 * time.Millisecond
 	o.backoffMax = 200 * time.Millisecond
 	c := e.start(t, o)
-	e.assign(t, c)
 	e.srv.FailEvents(http.StatusServiceUnavailable, 2)
 	emit(c, 1, 3)
+	e.assign(t, c)
 	eventually(t, "a failed post", func() bool { return len(e.srv.EventPosts()) >= 1 })
 	if got := outboxSeqs(t, e.stateDir); !slices.Equal(got, []int64{1, 2, 3}) {
 		t.Fatalf("outbox after a failed post = %v, want [1 2 3]", got)
