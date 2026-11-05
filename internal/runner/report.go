@@ -16,6 +16,23 @@ const (
 	eventSettleMax = 2 * time.Second
 )
 
+// startRelay detaches the relay from SIGTERM so terminate can drain the agent's last events into the outbox.
+func (r *runner) startRelay() (stop func(deadline context.Context)) {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.relayEvents(ctx)
+	}()
+	return func(deadline context.Context) {
+		cancel()
+		select {
+		case <-done:
+		case <-deadline.Done():
+		}
+	}
+}
+
 func (r *runner) relayEvents(ctx context.Context) {
 	events := r.ad.Events()
 	for {

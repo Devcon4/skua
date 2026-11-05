@@ -166,8 +166,9 @@ func TestRunnerContainerRestart(t *testing.T) {
 	for i := range want {
 		want[i] = i + 1
 	}
-	if steps := stepNumbers(got); !slices.Equal(steps, want) {
-		t.Errorf("step text events = %v, want %v", steps, want)
+	steps := stepNumbers(got)
+	if !slices.IsSorted(steps) || !slices.Equal(slices.Compact(slices.Clone(steps)), want) {
+		t.Errorf("step text events = %v, want every step 1..12 in order; a step repeated after the restart is allowed", steps)
 	}
 }
 

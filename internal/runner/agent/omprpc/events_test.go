@@ -1,7 +1,10 @@
 package omprpc
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -60,4 +63,31 @@ func TestEventsFromFakeOmp(t *testing.T) {
 		t.Fatalf("tool_end = %s", end.Data)
 	}
 	h.waitEvent(func(e wire.Event) bool { return e.Type == wire.EventText && string(e.Data) == `{"delta":"step 1"}` })
+}
+
+func TestEventQueueDrainWaitsUntilEveryEventIsReceived(t *testing.T) {
+	t.Parallel()
+	q := newEventQueue()
+	if err := q.drain(t.Context()); err != nil {
+		t.Fatalf("drain of an unused queue = %v", err)
+	}
+	want := []string{"a", "b", "c"}
+	for _, typ := range want {
+		q.push(wire.Event{Type: typ})
+	}
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := q.drain(cancelled); !errors.Is(err, context.Canceled) {
+		t.Fatalf("drain with events pending = %v, want context.Canceled", err)
+	}
+	var got []string
+	for range want {
+		got = append(got, (<-q.out).Type)
+	}
+	if err := q.drain(t.Context()); err != nil {
+		t.Fatalf("drain after every event was received = %v", err)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("received %v, want %v", got, want)
+	}
 }

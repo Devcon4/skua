@@ -20,6 +20,7 @@ type fakeAdapter struct {
 	last     string
 	exited   chan error
 	events   chan wire.Event
+	queued   []wire.Event
 	onPrompt func(f *fakeAdapter, ctx context.Context, n int, text string) (agent.TurnResult, error)
 }
 
@@ -84,6 +85,21 @@ func (f *fakeAdapter) Exited() <-chan error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.exited
+}
+
+func (f *fakeAdapter) Drain(ctx context.Context) error {
+	f.mu.Lock()
+	queued := f.queued
+	f.queued = nil
+	f.mu.Unlock()
+	for _, e := range queued {
+		select {
+		case f.events <- e:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
 }
 
 func (f *fakeAdapter) Stop(context.Context) error {

@@ -92,7 +92,7 @@ func (r *runner) run(ctx context.Context) int {
 	}
 	defer func() { _ = ln.Close() }()
 	go r.acceptSubmissions(ln)
-	go r.relayEvents(ctx)
+	stopRelay := r.startRelay()
 	r.mu.Lock()
 	if r.st.Assign != nil {
 		r.client.SetRun(r.st.Assign.Run)
@@ -107,10 +107,10 @@ func (r *runner) run(ctx context.Context) int {
 	for {
 		select {
 		case <-ctx.Done():
-			return r.terminate()
+			return r.terminate(stopRelay)
 		case c, ok := <-cmds:
 			if !ok {
-				return r.terminate()
+				return r.terminate(stopRelay)
 			}
 			r.handle(ctx, c)
 			r.update(func(st *state) { st.LastCommand = c.ID })
@@ -118,7 +118,7 @@ func (r *runner) run(ctx context.Context) int {
 	}
 }
 
-func (r *runner) terminate() int {
+func (r *runner) terminate(stopRelay func(deadline context.Context)) int {
 	r.killTree(context.Background())
 	r.mu.Lock()
 	driverDone := r.driverDone
@@ -126,6 +126,12 @@ func (r *runner) terminate() int {
 	if driverDone != nil {
 		<-driverDone
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), killGrace)
+	defer cancel()
+	if err := r.ad.Drain(ctx); err != nil {
+		slog.Warn("agent events not all relayed before shutdown", "err", err)
+	}
+	stopRelay(ctx)
 	return exitTerminated
 }
 

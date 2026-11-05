@@ -21,6 +21,10 @@ type Adapter interface {
 	Events() <-chan wire.Event
 	// Exited yields once when the agent process ends.
 	Exited() <-chan error
+	// Drain waits until the agent's output has closed and every event read from it has been
+	// received from Events. It returns ctx's error when ctx ends first and nil at once when no
+	// agent was started.
+	Drain(ctx context.Context) error
 	Stop(ctx context.Context) error
 }
 

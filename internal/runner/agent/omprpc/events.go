@@ -1,6 +1,7 @@
 package omprpc
 
 import (
+	"context"
 	"encoding/json"
 	"sync"
 
@@ -65,10 +66,13 @@ type eventQueue struct {
 	mu      sync.Mutex
 	buf     []wire.Event
 	pumping bool
+	drained chan struct{}
 }
 
 func newEventQueue() *eventQueue {
-	return &eventQueue{out: make(chan wire.Event)}
+	drained := make(chan struct{})
+	close(drained)
+	return &eventQueue{out: make(chan wire.Event), drained: drained}
 }
 
 func (q *eventQueue) push(e wire.Event) {
@@ -77,6 +81,7 @@ func (q *eventQueue) push(e wire.Event) {
 	q.buf = append(q.buf, e)
 	if !q.pumping {
 		q.pumping = true
+		q.drained = make(chan struct{})
 		go q.pump()
 	}
 }
@@ -86,6 +91,7 @@ func (q *eventQueue) pump() {
 		q.mu.Lock()
 		if len(q.buf) == 0 {
 			q.buf, q.pumping = nil, false
+			close(q.drained)
 			q.mu.Unlock()
 			return
 		}
@@ -93,5 +99,17 @@ func (q *eventQueue) pump() {
 		q.buf = q.buf[1:]
 		q.mu.Unlock()
 		q.out <- e
+	}
+}
+
+func (q *eventQueue) drain(ctx context.Context) error {
+	q.mu.Lock()
+	drained := q.drained
+	q.mu.Unlock()
+	select {
+	case <-drained:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }

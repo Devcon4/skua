@@ -287,6 +287,19 @@ func (a *Agent) Exited() <-chan error {
 	return nil
 }
 
+func (a *Agent) Drain(ctx context.Context) error {
+	p := a.current()
+	if p == nil {
+		return nil
+	}
+	select {
+	case <-p.readerDone:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return a.events.drain(ctx)
+}
+
 // Stop closes omp's stdin and waits up to two seconds for it to exit; killing what
 // remains is the caller's job.
 func (a *Agent) Stop(ctx context.Context) error {
