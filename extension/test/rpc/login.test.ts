@@ -111,7 +111,8 @@ test(
       const {idToken} = JSON.parse(readFileSync(token, 'utf8')) as {
         idToken: string;
       };
-      for (const note of omp.notifications()) assert.ok(!note.includes(idToken));
+      for (const note of omp.notifications())
+        assert.ok(!note.includes(idToken));
       assert.ok(
         existsSync(join(h.agentsDir, 'skua-generic.md')) &&
           existsSync(join(h.agentsDir, 'skua-golang.md')),
