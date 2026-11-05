@@ -80,12 +80,19 @@ test(
       const omp = await h.start({
         env: {BROWSER: await browser(h, 'browser.mjs', BROWSER_SCRIPT)},
       });
+      const since = omp.mark();
       const notes = await command(omp, loginLine(h), 60_000);
       assert.ok(notes.includes(loggedInNote(h)), JSON.stringify(notes));
+      const visitNote = await omp.waitFrame(
+        f =>
+          f.type === 'extension_ui_request' &&
+          f.method === 'notify' &&
+          /visit \S+$/.test(String(f.message)),
+        10_000,
+        since,
+      );
       const authorize = new URL(
-        notes
-          .map(n => /visit (\S+)$/.exec(n)?.[1])
-          .find(u => u !== undefined) ?? '',
+        /visit (\S+)$/.exec(String(visitNote.message))?.[1] ?? '',
       );
       assert.equal(authorize.searchParams.get('code_challenge_method'), 'S256');
       assert.match(
@@ -104,7 +111,7 @@ test(
       const {idToken} = JSON.parse(readFileSync(token, 'utf8')) as {
         idToken: string;
       };
-      for (const note of notes) assert.ok(!note.includes(idToken));
+      for (const note of omp.notifications()) assert.ok(!note.includes(idToken));
       assert.ok(
         existsSync(join(h.agentsDir, 'skua-generic.md')) &&
           existsSync(join(h.agentsDir, 'skua-golang.md')),
