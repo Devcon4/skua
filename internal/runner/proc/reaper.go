@@ -60,17 +60,23 @@ func reapAll() {
 			return
 		}
 		children.Lock()
-		if children.started[pid] {
-			delete(children.started, pid)
-			if w, ok := children.waiters[pid]; ok {
-				delete(children.waiters, pid)
-				w <- ws
-			} else {
-				children.exited[pid] = ws
-			}
-		}
+		deliverExitLocked(pid, ws)
 		children.Unlock()
 	}
+}
+
+func deliverExitLocked(pid int, ws syscall.WaitStatus) {
+	if !children.started[pid] {
+		return
+	}
+	delete(children.started, pid)
+	w, waiting := children.waiters[pid]
+	if !waiting {
+		children.exited[pid] = ws
+		return
+	}
+	delete(children.waiters, pid)
+	w <- ws
 }
 
 // Wait blocks until the child pid, started with Start, exits and returns its status.

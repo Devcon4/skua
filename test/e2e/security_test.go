@@ -597,42 +597,46 @@ func s28EnvFile(t *testing.T) map[string]string {
 func s28SecretRefs(pod *corev1.Pod) []string {
 	var refs []string
 	for _, v := range pod.Spec.Volumes {
-		if v.Secret != nil {
-			refs = append(refs, "volume "+v.Name+" secret "+v.Secret.SecretName)
-		}
-		if v.Projected != nil {
-			for _, src := range v.Projected.Sources {
-				if src.Secret != nil {
-					refs = append(refs, "volume "+v.Name+" projected secret "+src.Secret.Name)
-				}
-			}
-		}
+		refs = append(refs, s28VolumeSecretRefs(v)...)
 	}
 	var containers []corev1.Container
 	containers = append(containers, pod.Spec.InitContainers...)
 	containers = append(containers, pod.Spec.Containers...)
 	for _, c := range containers {
-		for _, e := range c.Env {
-			if e.ValueFrom != nil && e.ValueFrom.SecretKeyRef != nil {
-				refs = append(refs, "container "+c.Name+" env "+e.Name+" secret "+e.ValueFrom.SecretKeyRef.Name)
-			}
-		}
-		for _, e := range c.EnvFrom {
-			if e.SecretRef != nil {
-				refs = append(refs, "container "+c.Name+" envFrom secret "+e.SecretRef.Name)
-			}
-		}
+		refs = append(refs, s28EnvSecretRefs("container "+c.Name, c.Env, c.EnvFrom)...)
 	}
 	for _, c := range pod.Spec.EphemeralContainers {
-		for _, e := range c.Env {
-			if e.ValueFrom != nil && e.ValueFrom.SecretKeyRef != nil {
-				refs = append(refs, "ephemeral container "+c.Name+" env "+e.Name+" secret "+e.ValueFrom.SecretKeyRef.Name)
-			}
+		refs = append(refs, s28EnvSecretRefs("ephemeral container "+c.Name, c.Env, c.EnvFrom)...)
+	}
+	return refs
+}
+
+func s28VolumeSecretRefs(v corev1.Volume) []string {
+	var refs []string
+	if v.Secret != nil {
+		refs = append(refs, "volume "+v.Name+" secret "+v.Secret.SecretName)
+	}
+	if v.Projected == nil {
+		return refs
+	}
+	for _, src := range v.Projected.Sources {
+		if src.Secret != nil {
+			refs = append(refs, "volume "+v.Name+" projected secret "+src.Secret.Name)
 		}
-		for _, e := range c.EnvFrom {
-			if e.SecretRef != nil {
-				refs = append(refs, "ephemeral container "+c.Name+" envFrom secret "+e.SecretRef.Name)
-			}
+	}
+	return refs
+}
+
+func s28EnvSecretRefs(container string, env []corev1.EnvVar, envFrom []corev1.EnvFromSource) []string {
+	var refs []string
+	for _, e := range env {
+		if e.ValueFrom != nil && e.ValueFrom.SecretKeyRef != nil {
+			refs = append(refs, container+" env "+e.Name+" secret "+e.ValueFrom.SecretKeyRef.Name)
+		}
+	}
+	for _, e := range envFrom {
+		if e.SecretRef != nil {
+			refs = append(refs, container+" envFrom secret "+e.SecretRef.Name)
 		}
 	}
 	return refs

@@ -7,11 +7,13 @@ import (
 	"slices"
 	"time"
 
+	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/Devcon4/skua/api/v1alpha1"
+	"github.com/Devcon4/skua/internal/api/hub"
 	"github.com/Devcon4/skua/internal/contract/sandbox"
 	"github.com/Devcon4/skua/internal/contract/wire"
 )
@@ -19,33 +21,13 @@ import (
 // Assign sends the run assignment to the pod's attached stream once the run is Running with its Secret. A stream
 // that reattaches for the same run also gets the current forge token. Each stream is assigned at most once.
 func (rr *Routes) Assign(ctx context.Context, podName string) {
-	rr.mu.Lock()
-	st := rr.pods[podName]
-	if st == nil || st.conn == nil || st.assigned == st.conn {
-		rr.mu.Unlock()
+	st, conn, ok := rr.unassignedStream(podName)
+	if !ok {
 		return
 	}
-	conn := st.conn
-	rr.mu.Unlock()
-
 	log := logger.WithValues("pod", podName)
-	var pod corev1.Pod
-	key := client.ObjectKey{Namespace: rr.deps.Config.SandboxNamespace, Name: podName}
-	if err := rr.deps.APIReader.Get(ctx, key, &pod); err != nil {
-		if !apierrors.IsNotFound(err) {
-			log.Error(err, "get pod for assignment")
-		}
-		return
-	}
-	if string(pod.UID) != conn.Pod().UID {
-		return
-	}
-	run, err := rr.runForPod(ctx, &pod)
-	if err != nil {
-		log.Error(err, "look up run for assignment")
-		return
-	}
-	if run == nil || run.Status.Phase != v1alpha1.PhaseRunning {
+	run, ok := rr.runningRunOnStream(ctx, log, podName, conn)
+	if !ok {
 		return
 	}
 	a, forge, ok, err := rr.assignment(ctx, run)
@@ -61,28 +43,66 @@ func (rr *Routes) Assign(ctx context.Context, podName string) {
 		log.Error(err, "encode assign", "run", run.Name)
 		return
 	}
+	rr.deliverAssignment(log, podName, st, conn, run.Name, assignCmd, forge)
+}
 
+func (rr *Routes) unassignedStream(podName string) (*podState, *hub.RunnerConn, bool) {
 	rr.mu.Lock()
 	defer rr.mu.Unlock()
-	if st.conn != conn || st.assigned == conn || rr.pods[podName] != st {
+	st := rr.pods[podName]
+	if st == nil || st.conn == nil || st.assigned == st.conn {
+		return nil, nil, false
+	}
+	return st, st.conn, true
+}
+
+func (rr *Routes) runningRunOnStream(ctx context.Context, log logr.Logger, podName string, conn *hub.RunnerConn) (*v1alpha1.AgentRun, bool) {
+	var pod corev1.Pod
+	key := client.ObjectKey{Namespace: rr.deps.Config.SandboxNamespace, Name: podName}
+	if err := rr.deps.APIReader.Get(ctx, key, &pod); err != nil {
+		if !apierrors.IsNotFound(err) {
+			log.Error(err, "get pod for assignment")
+		}
+		return nil, false
+	}
+	if string(pod.UID) != conn.Pod().UID {
+		return nil, false
+	}
+	run, err := rr.runForPod(ctx, &pod)
+	if err != nil {
+		log.Error(err, "look up run for assignment")
+		return nil, false
+	}
+	if run == nil || run.Status.Phase != v1alpha1.PhaseRunning {
+		return nil, false
+	}
+	return run, true
+}
+
+func (rr *Routes) deliverAssignment(log logr.Logger, podName string, st *podState, conn *hub.RunnerConn, runName string, assignCmd wire.Command, forge *wire.Forge) {
+	rr.mu.Lock()
+	defer rr.mu.Unlock()
+	stillUnassigned := st.conn == conn && st.assigned != conn && rr.pods[podName] == st
+	if !stillUnassigned {
 		return
 	}
 	cmds := []wire.Command{assignCmd}
-	if st.run == run.Name && forge != nil {
+	reattachedForSameRun := st.run == runName && forge != nil
+	if reattachedForSameRun {
 		tok, err := command(wire.CommandToken, wire.Token{Token: forge.Token, ExpiresAt: forge.ExpiresAt})
 		if err != nil {
-			log.Error(err, "encode token", "run", run.Name)
+			log.Error(err, "encode token", "run", runName)
 			return
 		}
 		cmds = append(cmds, tok)
 	}
-	st.assigned, st.run = conn, run.Name
+	st.assigned, st.run = conn, runName
 	if forge != nil {
 		st.token = forge.Token
 	}
 	for _, c := range cmds {
-		if err := rr.deps.Hub.Send(podName, run.Name, c); err != nil {
-			log.Info("assignment kept for the next attach", "run", run.Name, "reason", err.Error())
+		if err := rr.deps.Hub.Send(podName, runName, c); err != nil {
+			log.Info("assignment kept for the next attach", "run", runName, "reason", err.Error())
 			return
 		}
 	}

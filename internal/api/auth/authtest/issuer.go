@@ -99,16 +99,7 @@ func (i *Issuer) Token(sub, aud string, opts ...TokenOption) string {
 		i.t.Fatalf("authtest: encode claims: %v", err)
 	}
 
-	var key jose.JSONWebKey
-	if o.otherKey {
-		key = i.newKey()
-	} else {
-		i.mu.Lock()
-		key = i.signing
-		i.mu.Unlock()
-	}
-
-	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: key},
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: i.tokenKey(o.otherKey)},
 		(&jose.SignerOptions{}).WithType("JWT"))
 	if err != nil {
 		i.t.Fatalf("authtest: create signer: %v", err)
@@ -122,6 +113,15 @@ func (i *Issuer) Token(sub, aud string, opts ...TokenOption) string {
 		i.t.Fatalf("authtest: serialize token: %v", err)
 	}
 	return token
+}
+
+func (i *Issuer) tokenKey(unpublished bool) jose.JSONWebKey {
+	if unpublished {
+		return i.newKey()
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.signing
 }
 
 // RotateKey replaces the signing key with a new one. The JWKS lists the new key first and keeps

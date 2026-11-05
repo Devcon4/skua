@@ -11,6 +11,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/rest"
 	testingclock "k8s.io/utils/clock/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -31,6 +32,21 @@ type devFixture struct {
 	base   int64
 	url    string
 	http   *http.Client
+}
+
+type devEnv struct {
+	restCfg *rest.Config
+	c       client.Client
+	cfg     *config.Config
+	issuer  *authtest.Issuer
+}
+
+func (de *devEnv) newFixture(t *testing.T) *devFixture {
+	clk := testingclock.NewFakeClock(time.Now())
+	base := clk.Now().UnixMicro()
+	h := hub.New(clk)
+	srv := startServer(t, de.restCfg, de.c, de.cfg, clk, h, authtest.NewTokenReviews())
+	return &devFixture{t: t, c: de.c, cfg: de.cfg, issuer: de.issuer, clock: clk, hub: h, base: base, url: srv.url, http: srv.http}
 }
 
 func devTestProfile(t *testing.T, c client.Client, name string, ready bool) {

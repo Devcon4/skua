@@ -57,9 +57,11 @@ func listPackages(t *testing.T) []pkg {
 	dec := json.NewDecoder(bytes.NewReader(out))
 	for {
 		var p pkg
-		if err := dec.Decode(&p); errors.Is(err, io.EOF) {
+		err := dec.Decode(&p)
+		if errors.Is(err, io.EOF) {
 			break
-		} else if err != nil {
+		}
+		if err != nil {
 			t.Fatalf("decode go list output: %v", err)
 		}
 		p.test = strings.Contains(p.ImportPath, " ") || strings.HasSuffix(p.ImportPath, "_test")

@@ -120,38 +120,42 @@ func TestLogin(t *testing.T) {
 	} {
 		t.Run(tc.email, func(t *testing.T) {
 			t.Parallel()
-			raw := login(t, tc.email)
-			ctx, cancel := context.WithTimeout(oidc.ClientContext(context.Background(), dexHTTP), requestTimeout)
-			defer cancel()
-			tok, err := verifier.Verify(ctx, raw)
-			if err != nil {
-				t.Fatalf("verify id_token: %v", err)
-			}
-			if tok.Issuer != dexIssuer {
-				t.Errorf("iss = %q, want %q", tok.Issuer, dexIssuer)
-			}
-			if !slices.Equal(tok.Audience, []string{ompClientID}) {
-				t.Errorf("aud = %q, want [%q]", tok.Audience, ompClientID)
-			}
-			var claims struct {
-				Email  string   `json:"email"`
-				Groups []string `json:"groups"`
-			}
-			if err := tok.Claims(&claims); err != nil {
-				t.Fatalf("claims: %v", err)
-			}
-			if claims.Email != tc.email {
-				t.Errorf("email = %q, want %q", claims.Email, tc.email)
-			}
-			if got := slices.Contains(claims.Groups, "skua-admins"); got != tc.admin {
-				t.Errorf("groups = %q: skua-admins present %t, want %t", claims.Groups, got, tc.admin)
-			}
-			if _, code := (apiClient{token: raw}).profiles(t); code != http.StatusOK {
-				t.Errorf("GET /profiles with token: status %d, want 200", code)
-			}
+			testLogin(t, verifier, tc.email, tc.admin)
 		})
 	}
 	if _, code := (apiClient{}).profiles(t); code != http.StatusUnauthorized {
 		t.Errorf("GET /profiles without token: status %d, want 401", code)
+	}
+}
+
+func testLogin(t *testing.T, verifier *oidc.IDTokenVerifier, email string, admin bool) {
+	raw := login(t, email)
+	ctx, cancel := context.WithTimeout(oidc.ClientContext(context.Background(), dexHTTP), requestTimeout)
+	defer cancel()
+	tok, err := verifier.Verify(ctx, raw)
+	if err != nil {
+		t.Fatalf("verify id_token: %v", err)
+	}
+	if tok.Issuer != dexIssuer {
+		t.Errorf("iss = %q, want %q", tok.Issuer, dexIssuer)
+	}
+	if !slices.Equal(tok.Audience, []string{ompClientID}) {
+		t.Errorf("aud = %q, want [%q]", tok.Audience, ompClientID)
+	}
+	var claims struct {
+		Email  string   `json:"email"`
+		Groups []string `json:"groups"`
+	}
+	if err := tok.Claims(&claims); err != nil {
+		t.Fatalf("claims: %v", err)
+	}
+	if claims.Email != email {
+		t.Errorf("email = %q, want %q", claims.Email, email)
+	}
+	if got := slices.Contains(claims.Groups, "skua-admins"); got != admin {
+		t.Errorf("groups = %q: skua-admins present %t, want %t", claims.Groups, got, admin)
+	}
+	if _, code := (apiClient{token: raw}).profiles(t); code != http.StatusOK {
+		t.Errorf("GET /profiles with token: status %d, want 200", code)
 	}
 }

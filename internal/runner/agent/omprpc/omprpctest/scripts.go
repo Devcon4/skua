@@ -46,14 +46,14 @@ func scriptOf(message string) (string, bool) {
 
 func (r *run) execute(message string) error {
 	st := r.state()
-	if line, ok := scriptOf(message); ok {
-		r.a.mu.Lock()
-		*st = sessionState{ID: st.ID, Provider: st.Provider, ModelID: st.ModelID, Script: line, LastText: st.LastText}
-		r.a.mu.Unlock()
-		if err := r.save(); err != nil {
+	line, startsScript := scriptOf(message)
+	if startsScript {
+		if err := r.startScript(st, line); err != nil {
 			return err
 		}
-	} else if st.Script == "" || st.Finished {
+	}
+	idle := !startsScript && (st.Script == "" || st.Finished)
+	if idle {
 		return r.text("ok")
 	}
 	name, rest, _ := strings.Cut(strings.TrimSpace(st.Script), " ")
@@ -64,6 +64,13 @@ func (r *run) execute(message string) error {
 		return r.save()
 	}
 	return err
+}
+
+func (r *run) startScript(st *sessionState, line string) error {
+	r.a.mu.Lock()
+	*st = sessionState{ID: st.ID, Provider: st.Provider, ModelID: st.ModelID, Script: line, LastText: st.LastText}
+	r.a.mu.Unlock()
+	return r.save()
 }
 
 func (r *run) dispatch(name, rest string) error {

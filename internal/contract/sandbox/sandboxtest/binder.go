@@ -193,21 +193,7 @@ func applyClaimMetadata(m *metav1.ObjectMeta, claim *extv1beta1.SandboxClaim) {
 func (b *Binder) markClaimReady(ctx context.Context, claim *extv1beta1.SandboxClaim, podName string, adopted bool) error {
 	key := client.ObjectKeyFromObject(claim)
 	if adopted {
-		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			var c extv1beta1.SandboxClaim
-			if err := b.reader.Get(ctx, key, &c); err != nil {
-				return err
-			}
-			if c.Annotations[extv1beta1.AssignedSandboxNameAnnotation] == podName {
-				return nil
-			}
-			if c.Annotations == nil {
-				c.Annotations = map[string]string{}
-			}
-			c.Annotations[extv1beta1.AssignedSandboxNameAnnotation] = podName
-			return b.client.Update(ctx, &c)
-		})
-		if err != nil {
+		if err := b.annotateAssignedSandbox(ctx, key, podName); err != nil {
 			return fmt.Errorf("annotate claim %s: %w", claim.Name, err)
 		}
 	}
@@ -226,6 +212,23 @@ func (b *Binder) markClaimReady(ctx context.Context, claim *extv1beta1.SandboxCl
 			LastTransitionTime: b.now(),
 		})
 		return b.client.Status().Update(ctx, &c)
+	})
+}
+
+func (b *Binder) annotateAssignedSandbox(ctx context.Context, key client.ObjectKey, podName string) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var c extv1beta1.SandboxClaim
+		if err := b.reader.Get(ctx, key, &c); err != nil {
+			return err
+		}
+		if c.Annotations[extv1beta1.AssignedSandboxNameAnnotation] == podName {
+			return nil
+		}
+		if c.Annotations == nil {
+			c.Annotations = map[string]string{}
+		}
+		c.Annotations[extv1beta1.AssignedSandboxNameAnnotation] = podName
+		return b.client.Update(ctx, &c)
 	})
 }
 

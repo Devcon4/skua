@@ -54,9 +54,10 @@ func (fw *frameWriter) respond(id, command string, data any, errMsg string) {
 	if id != "" {
 		r["id"] = id
 	}
-	if errMsg != "" {
+	switch {
+	case errMsg != "":
 		r["error"] = errMsg
-	} else if data != nil {
+	case data != nil:
 		r["data"] = data
 	}
 	b, err := json.Marshal(r)

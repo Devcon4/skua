@@ -68,6 +68,27 @@ type openAIStream struct {
 	err    error
 }
 
+type openAIToolCallDelta struct {
+	Index    int `json:"index"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+type openAIChunk struct {
+	Choices []struct {
+		Delta struct {
+			Content   string                `json:"content"`
+			ToolCalls []openAIToolCallDelta `json:"tool_calls"`
+		} `json:"delta"`
+		FinishReason *string `json:"finish_reason"`
+	} `json:"choices"`
+	Usage *struct {
+		PromptTokens int `json:"prompt_tokens"`
+	} `json:"usage"`
+}
+
 func readOpenAIStream(r io.Reader) openAIStream {
 	var out openAIStream
 	sc := bufio.NewScanner(r)
@@ -81,47 +102,38 @@ func readOpenAIStream(r io.Reader) openAIStream {
 			continue
 		}
 		out.chunks++
-		var c struct {
-			Choices []struct {
-				Delta struct {
-					Content   string `json:"content"`
-					ToolCalls []struct {
-						Index    int `json:"index"`
-						Function struct {
-							Name      string `json:"name"`
-							Arguments string `json:"arguments"`
-						} `json:"function"`
-					} `json:"tool_calls"`
-				} `json:"delta"`
-				FinishReason *string `json:"finish_reason"`
-			} `json:"choices"`
-			Usage *struct {
-				PromptTokens int `json:"prompt_tokens"`
-			} `json:"usage"`
-		}
+		var c openAIChunk
 		if err := json.Unmarshal([]byte(data), &c); err != nil {
 			out.err = err
 			return out
 		}
-		if c.Usage != nil {
-			out.usage = true
-		}
-		for _, ch := range c.Choices {
-			out.text += ch.Delta.Content
-			for _, tc := range ch.Delta.ToolCalls {
-				for len(out.calls) <= tc.Index {
-					out.calls = append(out.calls, gotCall{})
-				}
-				out.calls[tc.Index].Name += tc.Function.Name
-				out.calls[tc.Index].Args += tc.Function.Arguments
-			}
-			if ch.FinishReason != nil {
-				out.finish = *ch.FinishReason
-			}
-		}
+		out.add(c)
 	}
 	out.err = sc.Err()
 	return out
+}
+
+func (out *openAIStream) add(c openAIChunk) {
+	if c.Usage != nil {
+		out.usage = true
+	}
+	for _, ch := range c.Choices {
+		out.text += ch.Delta.Content
+		for _, tc := range ch.Delta.ToolCalls {
+			out.addToolCallDelta(tc)
+		}
+		if ch.FinishReason != nil {
+			out.finish = *ch.FinishReason
+		}
+	}
+}
+
+func (out *openAIStream) addToolCallDelta(tc openAIToolCallDelta) {
+	for len(out.calls) <= tc.Index {
+		out.calls = append(out.calls, gotCall{})
+	}
+	out.calls[tc.Index].Name += tc.Function.Name
+	out.calls[tc.Index].Args += tc.Function.Arguments
 }
 
 type anthropicStream struct {

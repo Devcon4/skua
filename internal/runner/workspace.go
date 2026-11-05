@@ -38,14 +38,17 @@ func (r *runner) prepare(ctx context.Context, a wire.Assign) error {
 	if err := os.RemoveAll(repo); err != nil {
 		return err
 	}
-	if a.Workspace == nil {
-		if err := os.MkdirAll(repo, 0o755); err != nil {
-			return err
-		}
-	} else if err := r.clone(ctx, a); err != nil {
+	if err := r.populateRepo(ctx, a, repo); err != nil {
 		return err
 	}
 	return writeSkill(repo, a.Run, r.s.maxResultBytes, a.Workspace != nil)
+}
+
+func (r *runner) populateRepo(ctx context.Context, a wire.Assign, repo string) error {
+	if a.Workspace == nil {
+		return os.MkdirAll(repo, 0o755)
+	}
+	return r.clone(ctx, a)
 }
 
 func (r *runner) writeSchema(schema []byte) error {

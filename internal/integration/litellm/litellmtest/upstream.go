@@ -129,22 +129,22 @@ func (s *server) serve(w http.ResponseWriter, r *http.Request, c conversation) {
 		writeError(w, c.api, rp.fault.Status, fmt.Sprintf("fakellm: scripted %d", rp.fault.Status))
 	case rp.fault != nil && rp.fault.DropAfterChunks > 0 && !c.stream:
 		panic(http.ErrAbortHandler)
+	case c.stream && c.api == apiOpenAI:
+		streamOpenAI(newStreamWriter(w, rp.dropAfterChunks()), c, rp)
 	case c.stream:
-		drop := 0
-		if rp.fault != nil {
-			drop = rp.fault.DropAfterChunks
-		}
-		sw := newStreamWriter(w, drop)
-		if c.api == apiOpenAI {
-			streamOpenAI(sw, c, rp)
-		} else {
-			streamAnthropic(sw, c, rp)
-		}
+		streamAnthropic(newStreamWriter(w, rp.dropAfterChunks()), c, rp)
 	case c.api == apiOpenAI:
 		writeJSON(w, http.StatusOK, openAIMessage(c, rp))
 	default:
 		writeJSON(w, http.StatusOK, anthropicMessage(c, rp))
 	}
+}
+
+func (rp reply) dropAfterChunks() int {
+	if rp.fault == nil {
+		return 0
+	}
+	return rp.fault.DropAfterChunks
 }
 
 func (s *server) wait(ctx context.Context, d time.Duration) bool {

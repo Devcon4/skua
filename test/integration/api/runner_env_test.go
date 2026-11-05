@@ -211,12 +211,7 @@ func (e *runnerTestEnv) writeSecret(t *testing.T, run, forgeToken string) {
 		secret.Data[sandbox.SecretKeyForgeToken] = []byte(forgeToken)
 		secret.Data[sandbox.SecretKeyForgeExpiresAt] = []byte(runnerTestExpiry(forgeToken).Format(time.RFC3339))
 	}
-	if exists {
-		err = e.c.Update(ctx, secret)
-	} else {
-		err = e.c.Create(ctx, secret)
-	}
-	if err != nil {
+	if err := e.saveSecret(ctx, secret, exists); err != nil {
 		t.Fatalf("write secret: %v", err)
 	}
 	runnerEventually(t, "cached secret of "+run, func() bool {
@@ -224,6 +219,13 @@ func (e *runnerTestEnv) writeSecret(t *testing.T, run, forgeToken string) {
 		return e.cached.Get(ctx, client.ObjectKeyFromObject(secret), &got) == nil &&
 			string(got.Data[sandbox.SecretKeyForgeToken]) == forgeToken
 	})
+}
+
+func (e *runnerTestEnv) saveSecret(ctx context.Context, secret *corev1.Secret, exists bool) error {
+	if exists {
+		return e.c.Update(ctx, secret)
+	}
+	return e.c.Create(ctx, secret)
 }
 
 func runnerTestExpiry(token string) time.Time {

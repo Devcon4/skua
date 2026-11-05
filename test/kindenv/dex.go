@@ -21,28 +21,8 @@ func (e *env) installDex(ctx context.Context) error {
 	if err := e.ensureNamespace(ctx, "dex", nil); err != nil {
 		return err
 	}
-	ok, err := e.has(ctx, "secret", "dex-test-users", "-n", "dex")
-	if err != nil {
+	if err := e.ensureDexTestUsers(ctx); err != nil {
 		return err
-	}
-	if !ok {
-		adminPassword, devPassword := randomHex(12), randomHex(12)
-		adminHash, err := bcrypt.GenerateFromPassword([]byte(adminPassword), 10)
-		if err != nil {
-			return err
-		}
-		devHash, err := bcrypt.GenerateFromPassword([]byte(devPassword), 10)
-		if err != nil {
-			return err
-		}
-		if err := e.createObject(ctx, secret("dex", "dex-test-users", map[string][]byte{
-			"admin-password": []byte(adminPassword),
-			"dev-password":   []byte(devPassword),
-			"admin-hash":     adminHash,
-			"dev-hash":       devHash,
-		})); err != nil {
-			return err
-		}
 	}
 	values, err := manifestFile("dex-values.yaml")
 	if err != nil {
@@ -53,34 +33,63 @@ func (e *env) installDex(ctx context.Context) error {
 		"--namespace", "dex", "-f", values, "--wait", "--timeout", "3m"); err != nil {
 		return err
 	}
-	var coredns corev1.ConfigMap
-	if _, err := e.getJSON(ctx, &coredns, "configmap", "coredns", "-n", "kube-system"); err != nil {
+	if err := e.ensureDexDNSRewrite(ctx); err != nil {
 		return err
-	}
-	if corefile := coredns.Data["Corefile"]; !strings.Contains(corefile, dexHost) {
-		raw, err := json.Marshal(&corev1.ConfigMap{
-			TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},
-			ObjectMeta: metav1.ObjectMeta{Name: "coredns", Namespace: "kube-system"},
-			Data:       map[string]string{"Corefile": addDexRewrite(corefile)},
-		})
-		if err != nil {
-			return err
-		}
-		if err := e.kubectlIn(ctx, raw, "replace", "-f", "-"); err != nil {
-			return err
-		}
-		if _, err := e.kubectl(ctx, "rollout", "restart", "deployment", "coredns", "-n", "kube-system"); err != nil {
-			return err
-		}
-		if _, err := e.kubectl(ctx, "rollout", "status", "deployment", "coredns", "-n", "kube-system", "--timeout=90s"); err != nil {
-			return err
-		}
 	}
 	if err := retryHTTP(ctx, DexIssuer+"/.well-known/openid-configuration", 30); err != nil {
 		return err
 	}
 	e.logf("Dex issuer %s answers from the host", DexIssuer)
 	return nil
+}
+
+func (e *env) ensureDexTestUsers(ctx context.Context) error {
+	ok, err := e.has(ctx, "secret", "dex-test-users", "-n", "dex")
+	if err != nil || ok {
+		return err
+	}
+	adminPassword, devPassword := randomHex(12), randomHex(12)
+	adminHash, err := bcrypt.GenerateFromPassword([]byte(adminPassword), 10)
+	if err != nil {
+		return err
+	}
+	devHash, err := bcrypt.GenerateFromPassword([]byte(devPassword), 10)
+	if err != nil {
+		return err
+	}
+	return e.createObject(ctx, secret("dex", "dex-test-users", map[string][]byte{
+		"admin-password": []byte(adminPassword),
+		"dev-password":   []byte(devPassword),
+		"admin-hash":     adminHash,
+		"dev-hash":       devHash,
+	}))
+}
+
+func (e *env) ensureDexDNSRewrite(ctx context.Context) error {
+	var coredns corev1.ConfigMap
+	if _, err := e.getJSON(ctx, &coredns, "configmap", "coredns", "-n", "kube-system"); err != nil {
+		return err
+	}
+	corefile := coredns.Data["Corefile"]
+	if strings.Contains(corefile, dexHost) {
+		return nil
+	}
+	raw, err := json.Marshal(&corev1.ConfigMap{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},
+		ObjectMeta: metav1.ObjectMeta{Name: "coredns", Namespace: "kube-system"},
+		Data:       map[string]string{"Corefile": addDexRewrite(corefile)},
+	})
+	if err != nil {
+		return err
+	}
+	if err := e.kubectlIn(ctx, raw, "replace", "-f", "-"); err != nil {
+		return err
+	}
+	if _, err := e.kubectl(ctx, "rollout", "restart", "deployment", "coredns", "-n", "kube-system"); err != nil {
+		return err
+	}
+	_, err = e.kubectl(ctx, "rollout", "status", "deployment", "coredns", "-n", "kube-system", "--timeout=90s")
+	return err
 }
 
 func addDexRewrite(corefile string) string {

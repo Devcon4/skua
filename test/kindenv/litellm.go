@@ -77,9 +77,11 @@ func deploymentImages(manifest []byte) ([]string, error) {
 	var images []string
 	for {
 		var doc json.RawMessage
-		if err := dec.Decode(&doc); errors.Is(err, io.EOF) {
+		err := dec.Decode(&doc)
+		if errors.Is(err, io.EOF) {
 			return images, nil
-		} else if err != nil {
+		}
+		if err != nil {
 			return nil, err
 		}
 		if len(doc) == 0 {

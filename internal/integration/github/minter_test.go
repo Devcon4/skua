@@ -197,38 +197,48 @@ func TestMintSignsJWTAndNarrowsToOneRepo(t *testing.T) {
 			if req.method != http.MethodPost || req.path != "/app/installations/"+testInstallationID+"/access_tokens" {
 				t.Fatalf("request = %s %s", req.method, req.path)
 			}
-			jwt, ok := strings.CutPrefix(req.auth, "Bearer ")
-			if !ok {
-				t.Fatalf("authorization = %q", req.auth)
-			}
-			claims := verifyJWT(t, jwt, &rsaKey(t).PublicKey)
-			if claims["iss"] != testAppID {
-				t.Fatalf("iss = %v", claims["iss"])
-			}
-			iat := time.Unix(int64(claims["iat"].(float64)), 0)
-			if wallNow := time.Now(); iat.After(wallNow) || iat.Before(wallNow.Add(-time.Minute)) {
-				t.Fatalf("iat = %s, want within the last minute of %s", iat, wallNow)
-			}
-			if exp := time.Unix(int64(claims["exp"].(float64)), 0); exp.Sub(iat) != 2*time.Minute {
-				t.Fatalf("exp - iat = %s, want 2m", exp.Sub(iat))
-			}
-			var body struct {
-				Repositories []string          `json:"repositories"`
-				Permissions  map[string]string `json:"permissions"`
-			}
-			if err := json.Unmarshal(req.body, &body); err != nil {
-				t.Fatal(err)
-			}
-			if len(body.Repositories) != 1 || body.Repositories[0] != "widgets" {
-				t.Fatalf("repositories = %v", body.Repositories)
-			}
-			if len(body.Permissions) != 2 || body.Permissions["contents"] != "write" || body.Permissions["pull_requests"] != "write" {
-				t.Fatalf("permissions = %v", body.Permissions)
-			}
+			requireAppJWT(t, req)
+			requireOneRepoWriteBody(t, req)
 			if counter.gets.Load() != 1 || counter.lists.Load() != 0 {
 				t.Fatalf("gets = %d, lists = %d", counter.gets.Load(), counter.lists.Load())
 			}
 		})
+	}
+}
+
+func requireAppJWT(t *testing.T, req capturedRequest) {
+	t.Helper()
+	jwt, ok := strings.CutPrefix(req.auth, "Bearer ")
+	if !ok {
+		t.Fatalf("authorization = %q", req.auth)
+	}
+	claims := verifyJWT(t, jwt, &rsaKey(t).PublicKey)
+	if claims["iss"] != testAppID {
+		t.Fatalf("iss = %v", claims["iss"])
+	}
+	iat := time.Unix(int64(claims["iat"].(float64)), 0)
+	if wallNow := time.Now(); iat.After(wallNow) || iat.Before(wallNow.Add(-time.Minute)) {
+		t.Fatalf("iat = %s, want within the last minute of %s", iat, wallNow)
+	}
+	if exp := time.Unix(int64(claims["exp"].(float64)), 0); exp.Sub(iat) != 2*time.Minute {
+		t.Fatalf("exp - iat = %s, want 2m", exp.Sub(iat))
+	}
+}
+
+func requireOneRepoWriteBody(t *testing.T, req capturedRequest) {
+	t.Helper()
+	var body struct {
+		Repositories []string          `json:"repositories"`
+		Permissions  map[string]string `json:"permissions"`
+	}
+	if err := json.Unmarshal(req.body, &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Repositories) != 1 || body.Repositories[0] != "widgets" {
+		t.Fatalf("repositories = %v", body.Repositories)
+	}
+	if len(body.Permissions) != 2 || body.Permissions["contents"] != "write" || body.Permissions["pull_requests"] != "write" {
+		t.Fatalf("permissions = %v", body.Permissions)
 	}
 }
 

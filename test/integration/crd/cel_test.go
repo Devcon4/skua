@@ -86,38 +86,9 @@ func TestCEL(t *testing.T) {
 		requireInvalid(t, c.Update(ctx, run), "spec is immutable")
 	})
 
-	t.Run("NonTerminalPhaseChangePasses", func(t *testing.T) {
-		run := validRun("nonterminal")
-		if err := c.Create(ctx, run); err != nil {
-			t.Fatalf("create run: %v", err)
-		}
-		if err := setStatus(ctx, t, c, run, v1alpha1.PhasePending, ""); err != nil {
-			t.Fatalf("set Pending: %v", err)
-		}
-		if err := setStatus(ctx, t, c, run, v1alpha1.PhaseRunning, ""); err != nil {
-			t.Fatalf("set Running: %v", err)
-		}
-		if err := setStatus(ctx, t, c, run, v1alpha1.PhaseFailed, v1alpha1.ReasonCancelled); err != nil {
-			t.Fatalf("set Failed: %v", err)
-		}
-	})
+	t.Run("NonTerminalPhaseChangePasses", func(t *testing.T) { testNonTerminalPhaseChangePasses(t, c) })
 
-	t.Run("TerminalPhaseAndReasonFrozen", func(t *testing.T) {
-		run := validRun("terminal")
-		if err := c.Create(ctx, run); err != nil {
-			t.Fatalf("create run: %v", err)
-		}
-		if err := setStatus(ctx, t, c, run, v1alpha1.PhaseSucceeded, v1alpha1.ReasonCompleted); err != nil {
-			t.Fatalf("set Succeeded: %v", err)
-		}
-		const frozen = "phase and reason are immutable once the phase is terminal"
-		requireInvalid(t, setStatus(ctx, t, c, run, v1alpha1.PhaseFailed, v1alpha1.ReasonCompleted), frozen)
-		requireInvalid(t, setStatus(ctx, t, c, run, v1alpha1.PhaseSucceeded, v1alpha1.ReasonMaxRuntime), frozen)
-		requireInvalid(t, setStatus(ctx, t, c, run, v1alpha1.PhaseRunning, ""), frozen)
-		if err := setStatus(ctx, t, c, run, v1alpha1.PhaseSucceeded, v1alpha1.ReasonCompleted); err != nil {
-			t.Fatalf("same terminal phase and reason: %v", err)
-		}
-	})
+	t.Run("TerminalPhaseAndReasonFrozen", func(t *testing.T) { testTerminalPhaseAndReasonFrozen(t, c) })
 
 	t.Run("WorkspaceRepoPattern", func(t *testing.T) {
 		run := validRun("no-slash")
@@ -148,38 +119,76 @@ func TestCEL(t *testing.T) {
 		requireInvalid(t, c.Create(ctx, p), "metadata.name must be at most 50 characters")
 	})
 
-	t.Run("ProfileDefaults", func(t *testing.T) {
-		p := validProfile("defaults")
-		if err := c.Create(ctx, p); err != nil {
-			t.Fatalf("create profile: %v", err)
-		}
-		got := &v1alpha1.AgentProfile{}
-		if err := c.Get(ctx, client.ObjectKeyFromObject(p), got); err != nil {
-			t.Fatalf("get profile: %v", err)
-		}
-		if r := got.Spec.WarmPool.Replicas; r == nil || *r != 1 {
-			t.Errorf("warmPool.replicas = %v, want 1", r)
-		}
-		if d := got.Spec.Limits.MaxRuntime.Duration; d != 4*time.Hour {
-			t.Errorf("limits.maxRuntime = %v, want 4h", d)
-		}
-		if got.Spec.Forge != v1alpha1.ForgeNone {
-			t.Errorf("forge = %q, want %q", got.Spec.Forge, v1alpha1.ForgeNone)
-		}
-		if got.Spec.Adapter != v1alpha1.AdapterOmpRPC {
-			t.Errorf("adapter = %q, want %q", got.Spec.Adapter, v1alpha1.AdapterOmpRPC)
-		}
-		if r := got.Spec.Limits.MaxRestarts; r == nil || *r != 3 {
-			t.Errorf("limits.maxRestarts = %v, want 3", r)
-		}
-		if got.Spec.Limits.MaxResultBytes != 262144 {
-			t.Errorf("limits.maxResultBytes = %d, want 262144", got.Spec.Limits.MaxResultBytes)
-		}
-		if s := got.Spec.Workspace.Size.String(); s != "10Gi" {
-			t.Errorf("workspace.size = %s, want 10Gi", s)
-		}
-		if b := got.Spec.Limits.BudgetUSD.String(); b != "10" {
-			t.Errorf("limits.budgetUSD = %s, want 10", b)
-		}
-	})
+	t.Run("ProfileDefaults", func(t *testing.T) { testProfileDefaults(t, c) })
+}
+
+func testNonTerminalPhaseChangePasses(t *testing.T, c client.Client) {
+	ctx := t.Context()
+	run := validRun("nonterminal")
+	if err := c.Create(ctx, run); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	if err := setStatus(ctx, t, c, run, v1alpha1.PhasePending, ""); err != nil {
+		t.Fatalf("set Pending: %v", err)
+	}
+	if err := setStatus(ctx, t, c, run, v1alpha1.PhaseRunning, ""); err != nil {
+		t.Fatalf("set Running: %v", err)
+	}
+	if err := setStatus(ctx, t, c, run, v1alpha1.PhaseFailed, v1alpha1.ReasonCancelled); err != nil {
+		t.Fatalf("set Failed: %v", err)
+	}
+}
+
+func testTerminalPhaseAndReasonFrozen(t *testing.T, c client.Client) {
+	ctx := t.Context()
+	run := validRun("terminal")
+	if err := c.Create(ctx, run); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	if err := setStatus(ctx, t, c, run, v1alpha1.PhaseSucceeded, v1alpha1.ReasonCompleted); err != nil {
+		t.Fatalf("set Succeeded: %v", err)
+	}
+	const frozen = "phase and reason are immutable once the phase is terminal"
+	requireInvalid(t, setStatus(ctx, t, c, run, v1alpha1.PhaseFailed, v1alpha1.ReasonCompleted), frozen)
+	requireInvalid(t, setStatus(ctx, t, c, run, v1alpha1.PhaseSucceeded, v1alpha1.ReasonMaxRuntime), frozen)
+	requireInvalid(t, setStatus(ctx, t, c, run, v1alpha1.PhaseRunning, ""), frozen)
+	if err := setStatus(ctx, t, c, run, v1alpha1.PhaseSucceeded, v1alpha1.ReasonCompleted); err != nil {
+		t.Fatalf("same terminal phase and reason: %v", err)
+	}
+}
+
+func testProfileDefaults(t *testing.T, c client.Client) {
+	ctx := t.Context()
+	p := validProfile("defaults")
+	if err := c.Create(ctx, p); err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	got := &v1alpha1.AgentProfile{}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(p), got); err != nil {
+		t.Fatalf("get profile: %v", err)
+	}
+	if r := got.Spec.WarmPool.Replicas; r == nil || *r != 1 {
+		t.Errorf("warmPool.replicas = %v, want 1", r)
+	}
+	if d := got.Spec.Limits.MaxRuntime.Duration; d != 4*time.Hour {
+		t.Errorf("limits.maxRuntime = %v, want 4h", d)
+	}
+	if got.Spec.Forge != v1alpha1.ForgeNone {
+		t.Errorf("forge = %q, want %q", got.Spec.Forge, v1alpha1.ForgeNone)
+	}
+	if got.Spec.Adapter != v1alpha1.AdapterOmpRPC {
+		t.Errorf("adapter = %q, want %q", got.Spec.Adapter, v1alpha1.AdapterOmpRPC)
+	}
+	if r := got.Spec.Limits.MaxRestarts; r == nil || *r != 3 {
+		t.Errorf("limits.maxRestarts = %v, want 3", r)
+	}
+	if got.Spec.Limits.MaxResultBytes != 262144 {
+		t.Errorf("limits.maxResultBytes = %d, want 262144", got.Spec.Limits.MaxResultBytes)
+	}
+	if s := got.Spec.Workspace.Size.String(); s != "10Gi" {
+		t.Errorf("workspace.size = %s, want 10Gi", s)
+	}
+	if b := got.Spec.Limits.BudgetUSD.String(); b != "10" {
+		t.Errorf("limits.budgetUSD = %s, want 10", b)
+	}
 }

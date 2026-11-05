@@ -180,71 +180,97 @@ func setDefault(field *string, value string) {
 	}
 }
 
+type configValidation struct {
+	c    *Config
+	errs []error
+}
+
 func (c *Config) validate() error {
-	var errs []error
-	required := func(field, value string) {
-		if value == "" {
-			errs = append(errs, fmt.Errorf("%s: required", field))
-		}
-	}
-	required("oidc.issuerURL", c.OIDC.IssuerURL)
-	required("oidc.audience", c.OIDC.Audience)
-	required("gateway.baseURL", c.Gateway.BaseURL)
-	required("gateway.operatorKeySecret.name", c.Gateway.OperatorKeySecret.Name)
-	required("gateway.operatorKeySecret.key", c.Gateway.OperatorKeySecret.Key)
-	separateNamespace := func(field, ns string) {
-		if ns != "" && (ns == c.RunNamespace || ns == c.SandboxNamespace) {
-			errs = append(errs, fmt.Errorf("%s: %q must differ from runNamespace and sandboxNamespace", field, ns))
-		}
-	}
-	separateNamespace("gateway.operatorKeySecret.namespace", c.Gateway.OperatorKeySecret.Namespace)
-	required("api.runnerURL", c.API.RunnerURL)
-	required("runner.image", c.Runner.Image)
-	if c.GitHub != nil {
-		required("github.appSecret.namespace", c.GitHub.AppSecret.Namespace)
-		required("github.appSecret.name", c.GitHub.AppSecret.Name)
-		separateNamespace("github.appSecret.namespace", c.GitHub.AppSecret.Namespace)
-	}
+	v := &configValidation{c: c}
+	v.required("oidc.issuerURL", c.OIDC.IssuerURL)
+	v.required("oidc.audience", c.OIDC.Audience)
+	v.required("gateway.baseURL", c.Gateway.BaseURL)
+	v.required("gateway.operatorKeySecret.name", c.Gateway.OperatorKeySecret.Name)
+	v.required("gateway.operatorKeySecret.key", c.Gateway.OperatorKeySecret.Key)
+	v.separateNamespace("gateway.operatorKeySecret.namespace", c.Gateway.OperatorKeySecret.Namespace)
+	v.required("api.runnerURL", c.API.RunnerURL)
+	v.required("runner.image", c.Runner.Image)
+	v.gitHub()
 
-	egress := func(field string, t EgressTarget) {
-		required(field+".namespace", t.Namespace)
-		if t.Port < 1 || t.Port > 65535 {
-			errs = append(errs, fmt.Errorf("%s.port: %d is not a port in 1..65535", field, t.Port))
-		}
-	}
-	egress("gateway.egress", c.Gateway.Egress)
-	egress("api.egress", c.API.Egress)
+	v.egress("gateway.egress", c.Gateway.Egress)
+	v.egress("api.egress", c.API.Egress)
 	for i, t := range c.Network.ExtraEgress {
-		egress(fmt.Sprintf("network.extraEgress[%d]", i), t)
+		v.egress(fmt.Sprintf("network.extraEgress[%d]", i), t)
 	}
 
-	cidrs := func(field string, values []string) {
-		if len(values) == 0 {
-			errs = append(errs, fmt.Errorf("%s: at least one CIDR required", field))
+	v.cidrs("network.podCIDRs", c.Network.PodCIDRs)
+	v.cidrs("network.serviceCIDRs", c.Network.ServiceCIDRs)
+	v.cidrs("network.nodeCIDRs", c.Network.NodeCIDRs)
+
+	v.retention()
+	v.supportedRunnerVersions()
+	return errors.Join(v.errs...)
+}
+
+func (v *configValidation) fail(format string, args ...any) {
+	v.errs = append(v.errs, fmt.Errorf(format, args...))
+}
+
+func (v *configValidation) required(field, value string) {
+	if value == "" {
+		v.fail("%s: required", field)
+	}
+}
+
+func (v *configValidation) separateNamespace(field, ns string) {
+	if ns != "" && (ns == v.c.RunNamespace || ns == v.c.SandboxNamespace) {
+		v.fail("%s: %q must differ from runNamespace and sandboxNamespace", field, ns)
+	}
+}
+
+func (v *configValidation) gitHub() {
+	if v.c.GitHub == nil {
+		return
+	}
+	v.required("github.appSecret.namespace", v.c.GitHub.AppSecret.Namespace)
+	v.required("github.appSecret.name", v.c.GitHub.AppSecret.Name)
+	v.separateNamespace("github.appSecret.namespace", v.c.GitHub.AppSecret.Namespace)
+}
+
+func (v *configValidation) egress(field string, t EgressTarget) {
+	v.required(field+".namespace", t.Namespace)
+	if t.Port < 1 || t.Port > 65535 {
+		v.fail("%s.port: %d is not a port in 1..65535", field, t.Port)
+	}
+}
+
+func (v *configValidation) cidrs(field string, values []string) {
+	if len(values) == 0 {
+		v.fail("%s: at least one CIDR required", field)
+	}
+	for i, value := range values {
+		if _, _, err := net.ParseCIDR(value); err != nil {
+			v.fail("%s[%d]: invalid CIDR %q", field, i, value)
 		}
-		for i, v := range values {
-			if _, _, err := net.ParseCIDR(v); err != nil {
-				errs = append(errs, fmt.Errorf("%s[%d]: invalid CIDR %q", field, i, v))
-			}
-		}
 	}
-	cidrs("network.podCIDRs", c.Network.PodCIDRs)
-	cidrs("network.serviceCIDRs", c.Network.ServiceCIDRs)
-	cidrs("network.nodeCIDRs", c.Network.NodeCIDRs)
+}
 
-	if c.Retention.AfterFetch.Duration < 0 {
-		errs = append(errs, fmt.Errorf("retention.afterFetch: %s is negative", c.Retention.AfterFetch.Duration))
+func (v *configValidation) retention() {
+	r := v.c.Retention
+	if r.AfterFetch.Duration < 0 {
+		v.fail("retention.afterFetch: %s is negative", r.AfterFetch.Duration)
 	}
-	if c.Retention.Max.Duration < 0 {
-		errs = append(errs, fmt.Errorf("retention.max: %s is negative", c.Retention.Max.Duration))
+	if r.Max.Duration < 0 {
+		v.fail("retention.max: %s is negative", r.Max.Duration)
 	}
-	if c.Retention.AfterFetch.Duration > c.Retention.Max.Duration {
-		errs = append(errs, fmt.Errorf("retention.afterFetch: %s is greater than retention.max %s", c.Retention.AfterFetch.Duration, c.Retention.Max.Duration))
+	if r.AfterFetch.Duration > r.Max.Duration {
+		v.fail("retention.afterFetch: %s is greater than retention.max %s", r.AfterFetch.Duration, r.Max.Duration)
 	}
+}
 
-	if _, err := semver.NewConstraint(c.Runner.SupportedVersions); c.Runner.SupportedVersions == "" || err != nil {
-		errs = append(errs, fmt.Errorf("runner.supportedVersions: %q is not a semver constraint", c.Runner.SupportedVersions))
+func (v *configValidation) supportedRunnerVersions() {
+	constraint := v.c.Runner.SupportedVersions
+	if _, err := semver.NewConstraint(constraint); constraint == "" || err != nil {
+		v.fail("runner.supportedVersions: %q is not a semver constraint", constraint)
 	}
-
-	return errors.Join(errs...)
 }

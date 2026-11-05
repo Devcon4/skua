@@ -8,8 +8,28 @@ import (
 )
 
 func (s *server) plan(c conversation) reply {
-	turn := 0
-	var userTexts []string
+	turn, userTexts := conversationTurn(c)
+	scenario := s.matchScenario(userTexts)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.seq++
+	rp := reply{seq: s.seq}
+	rp.record = RequestRecord{Time: s.clock.Now(), API: c.api, Model: c.model, Stream: c.stream, Turn: turn, Status: http.StatusOK}
+	t := s.scriptedTurn(&rp, scenario, turn)
+
+	rp.text = t.Text
+	if t.Text == "" && len(t.ToolCalls) == 0 {
+		rp.text = "ok"
+	}
+	replyBytes := len(rp.text) + planToolCalls(&rp, c.api, t, turn)
+	rp.usage = replyUsage(t, c.size, replyBytes)
+	s.log = append(s.log, rp.record)
+	return rp
+}
+
+func conversationTurn(c conversation) (turn int, userTexts []string) {
 	for _, m := range c.messages {
 		switch m.Role {
 		case "assistant":
@@ -18,48 +38,52 @@ func (s *server) plan(c conversation) reply {
 			userTexts = append(userTexts, textOf(m.Content))
 		}
 	}
-	scenario := -1
+	return turn, userTexts
+}
+
+func (s *server) matchScenario(userTexts []string) int {
 	for i, sc := range s.scenarios {
 		if sc.Match != "" && containsAny(userTexts, sc.Match) {
-			scenario = i
-			break
+			return i
 		}
 	}
+	return -1
+}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.seq++
-	rp := reply{seq: s.seq}
-	rp.record = RequestRecord{Time: s.clock.Now(), API: c.api, Model: c.model, Stream: c.stream, Turn: turn, Status: http.StatusOK}
+func (s *server) scriptedTurn(rp *reply, scenario, turn int) Turn {
+	if scenario < 0 {
+		return Turn{}
+	}
+	sc := s.scenarios[scenario]
+	rp.record.Scenario = sc.Name
 	var t Turn
-	if scenario >= 0 {
-		sc := s.scenarios[scenario]
-		rp.record.Scenario = sc.Name
-		if turn < len(sc.Turns) {
-			t = sc.Turns[turn]
-		}
-		if f := t.Fault; f != nil {
-			k := turnKey{scenario, turn}
-			s.attempts[k]++
-			if f.Times == 0 || s.attempts[k] <= f.Times {
-				applied := *f
-				rp.fault = &applied
-				rp.record.Fault = &applied
-				if f.Status != 0 {
-					rp.record.Status = f.Status
-				}
-			}
-		}
+	if turn < len(sc.Turns) {
+		t = sc.Turns[turn]
 	}
+	s.injectFault(rp, turnKey{scenario, turn}, t.Fault)
+	return t
+}
 
-	rp.text = t.Text
-	if t.Text == "" && len(t.ToolCalls) == 0 {
-		rp.text = "ok"
+func (s *server) injectFault(rp *reply, k turnKey, f *Fault) {
+	if f == nil {
+		return
 	}
-	replyBytes := len(rp.text)
+	s.attempts[k]++
+	faultExhausted := f.Times != 0 && s.attempts[k] > f.Times
+	if faultExhausted {
+		return
+	}
+	applied := *f
+	rp.fault = &applied
+	rp.record.Fault = &applied
+	if f.Status != 0 {
+		rp.record.Status = f.Status
+	}
+}
+
+func planToolCalls(rp *reply, api string, t Turn, turn int) (callBytes int) {
 	prefix := "call_"
-	if c.api == apiAnthropic {
+	if api == apiAnthropic {
 		prefix = "toolu_"
 	}
 	for i, tc := range t.ToolCalls {
@@ -67,18 +91,19 @@ func (s *server) plan(c conversation) reply {
 		if err != nil {
 			rp.err = fmt.Errorf("scenario %q turn %d tool call %d: %w", rp.record.Scenario, turn, i, err)
 			rp.record.Status = http.StatusInternalServerError
-			break
+			return callBytes
 		}
 		rp.calls = append(rp.calls, toolCall{id: fmt.Sprintf("%s%d_%d", prefix, rp.seq, i), name: tc.Name, args: args})
-		replyBytes += len(tc.Name) + len(args)
+		callBytes += len(tc.Name) + len(args)
 	}
+	return callBytes
+}
+
+func replyUsage(t Turn, promptBytes, replyBytes int) Usage {
 	if t.Usage != nil {
-		rp.usage = *t.Usage
-	} else {
-		rp.usage = Usage{PromptTokens: c.size / 4, CompletionTokens: replyBytes / 4}
+		return *t.Usage
 	}
-	s.log = append(s.log, rp.record)
-	return rp
+	return Usage{PromptTokens: promptBytes / 4, CompletionTokens: replyBytes / 4}
 }
 
 func textOf(raw json.RawMessage) string {

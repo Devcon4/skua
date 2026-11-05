@@ -64,6 +64,35 @@ var dirs = []string{"images", "test/fakes", "test/kindenv", "test/install", "cha
 // differs from extension/omp-range.json min. Findings are sorted by file and line. An error means
 // a file could not be read or parsed, or mise.toml has no omp pin.
 func Check(root string) ([]Finding, error) {
+	files, err := checkedFiles(root)
+	if err != nil {
+		return nil, err
+	}
+	fsys := os.DirFS(root)
+	var out []Finding
+	for file, m := range files {
+		raw, err := fs.ReadFile(fsys, file)
+		if err != nil {
+			return nil, err
+		}
+		found, err := checkFile(file, raw, m)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, found...)
+	}
+	omp, err := checkOmpVersion(root)
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, omp...)
+	slices.SortFunc(out, func(a, b Finding) int {
+		return cmp.Or(cmp.Compare(a.File, b.File), cmp.Compare(a.Line, b.Line))
+	})
+	return out, nil
+}
+
+func checkedFiles(root string) (map[string]mode, error) {
 	files := map[string]mode{}
 	if _, err := os.Stat(filepath.Join(root, "Dockerfile")); err == nil {
 		files["Dockerfile"] = dockerfile
@@ -83,35 +112,19 @@ func Check(root string) ([]Finding, error) {
 			return nil, err
 		}
 	}
+	return files, nil
+}
 
-	var out []Finding
-	for file, m := range files {
-		raw, err := fs.ReadFile(fsys, file)
-		if err != nil {
-			return nil, err
-		}
-		switch m {
-		case dockerfile:
-			out = append(out, checkDockerfile(file, lines(raw))...)
-		case goConstants:
-			found, err := checkGoConstants(file, raw)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, found...)
-		case values, docs:
-			out = append(out, checkYAML(file, lines(raw), m)...)
-		}
+func checkFile(file string, raw []byte, m mode) ([]Finding, error) {
+	switch m {
+	case dockerfile:
+		return checkDockerfile(file, lines(raw)), nil
+	case goConstants:
+		return checkGoConstants(file, raw)
+	case values, docs:
+		return checkYAML(file, lines(raw), m), nil
 	}
-	omp, err := checkOmpVersion(root)
-	if err != nil {
-		return nil, err
-	}
-	out = append(out, omp...)
-	slices.SortFunc(out, func(a, b Finding) int {
-		return cmp.Or(cmp.Compare(a.File, b.File), cmp.Compare(a.Line, b.Line))
-	})
-	return out, nil
+	return nil, nil
 }
 
 func classify(p string) mode {
@@ -183,62 +196,109 @@ func checkGoConstants(file string, raw []byte) ([]Finding, error) {
 		return nil, err
 	}
 	var out []Finding
+	for _, lit := range declaredStringLiterals(f) {
+		v, err := strconv.Unquote(lit.Value)
+		if err != nil {
+			return nil, err
+		}
+		if strings.HasPrefix(v, "sha256:") || !imageRefRe.MatchString(v) || digestRe.MatchString(v) {
+			continue
+		}
+		out = append(out, Finding{file, fset.Position(lit.Pos()).Line, fmt.Sprintf("image %s is not pinned by @sha256: digest", v)})
+	}
+	return out, nil
+}
+
+func declaredStringLiterals(f *ast.File) []*ast.BasicLit {
+	var lits []*ast.BasicLit
 	for _, decl := range f.Decls {
 		gen, ok := decl.(*ast.GenDecl)
 		if !ok || (gen.Tok != token.CONST && gen.Tok != token.VAR) {
 			continue
 		}
 		for _, spec := range gen.Specs {
-			for _, value := range spec.(*ast.ValueSpec).Values {
-				lit, ok := value.(*ast.BasicLit)
-				if !ok || lit.Kind != token.STRING {
-					continue
-				}
-				v, err := strconv.Unquote(lit.Value)
-				if err != nil {
-					return nil, err
-				}
-				if strings.HasPrefix(v, "sha256:") || !imageRefRe.MatchString(v) || digestRe.MatchString(v) {
-					continue
-				}
-				out = append(out, Finding{file, fset.Position(lit.Pos()).Line, fmt.Sprintf("image %s is not pinned by @sha256: digest", v)})
-			}
+			lits = append(lits, stringLiterals(spec.(*ast.ValueSpec).Values)...)
 		}
 	}
-	return out, nil
+	return lits
+}
+
+func stringLiterals(values []ast.Expr) []*ast.BasicLit {
+	var lits []*ast.BasicLit
+	for _, value := range values {
+		if lit, ok := value.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+			lits = append(lits, lit)
+		}
+	}
+	return lits
+}
+
+type imageBlock struct {
+	indent, child int
+	tagLine       int
+	tag, digest   string
+}
+
+var noImageBlock = imageBlock{indent: -1, child: -1}
+
+func (b imageBlock) isOpen() bool {
+	return b.indent >= 0
+}
+
+func (b imageBlock) contains(indent int) bool {
+	return b.isOpen() && indent > b.indent
+}
+
+func (b *imageBlock) record(n int, line string, indent int) {
+	if b.child < 0 {
+		b.child = indent
+	}
+	if indent != b.child {
+		return
+	}
+	if t := tagKeyRe.FindStringSubmatch(line); t != nil {
+		b.tagLine, b.tag = n, scalar(t[1])
+		return
+	}
+	if d := digestKeyRe.FindStringSubmatch(line); d != nil {
+		b.digest = scalar(d[1])
+	}
+}
+
+func (b imageBlock) tagIsUnpinned() bool {
+	return b.tag != "" && b.digest == "" && b.tag != localTag && !envsubstRe.MatchString(b.tag)
+}
+
+func contentIndent(line string) int {
+	c := contentRe.FindStringSubmatch(line)
+	if c == nil {
+		return -1
+	}
+	return len(c[1])
+}
+
+func imageValueIsExempt(v string, m mode) bool {
+	return envsubstRe.MatchString(v) || (m == docs && placeholderDigestRe.MatchString(v))
 }
 
 func checkYAML(file string, lines []string, m mode) []Finding {
 	var out []Finding
-	block, child := -1, -1
-	tagLine, tag, digest := 0, "", ""
-	flush := func() {
-		if tag == "" || digest != "" || tag == localTag || envsubstRe.MatchString(tag) {
-			return
+	block := noImageBlock
+	closeBlock := func() {
+		if block.tagIsUnpinned() {
+			out = append(out, Finding{file, block.tagLine, fmt.Sprintf("image.tag %s has no image.digest", block.tag)})
 		}
-		out = append(out, Finding{file, tagLine, fmt.Sprintf("image.tag %s has no image.digest", tag)})
+		block = noImageBlock
 	}
 	for i, line := range lines {
 		n := i + 1
-		if block >= 0 {
-			if c := contentRe.FindStringSubmatch(line); c != nil {
-				indent := len(c[1])
-				if indent > block {
-					if child < 0 {
-						child = indent
-					}
-					if indent == child {
-						if t := tagKeyRe.FindStringSubmatch(line); t != nil {
-							tagLine, tag = n, scalar(t[1])
-						} else if d := digestKeyRe.FindStringSubmatch(line); d != nil {
-							digest = scalar(d[1])
-						}
-					}
-					continue
-				}
-				flush()
-				block = -1
-			}
+		indent := contentIndent(line)
+		if block.contains(indent) {
+			block.record(n, line, indent)
+			continue
+		}
+		if block.isOpen() && indent >= 0 {
+			closeBlock()
 		}
 		img := imageKeyRe.FindStringSubmatch(line)
 		if img == nil {
@@ -247,20 +307,16 @@ func checkYAML(file string, lines []string, m mode) []Finding {
 		v := scalar(img[3])
 		if v == "" {
 			if m == values {
-				block, child = len(img[1]), -1
-				tagLine, tag, digest = 0, "", ""
+				block = imageBlock{indent: len(img[1]), child: -1}
 			}
 			continue
 		}
-		if envsubstRe.MatchString(v) || (m == docs && placeholderDigestRe.MatchString(v)) {
-			continue
-		}
-		if !digestRe.MatchString(v) {
+		if !imageValueIsExempt(v, m) && !digestRe.MatchString(v) {
 			out = append(out, Finding{file, n, fmt.Sprintf("image: %s is not pinned by @sha256: digest", v)})
 		}
 	}
-	if block >= 0 {
-		flush()
+	if block.isOpen() {
+		closeBlock()
 	}
 	return out
 }

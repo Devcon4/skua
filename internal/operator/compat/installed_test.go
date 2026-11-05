@@ -26,16 +26,18 @@ const (
 	compatSandboxCRD = "sandboxes.agents.x-k8s.io"
 )
 
+type installedCase struct {
+	name         string
+	images       []string
+	skipCRD      string
+	alphaOnlyCRD string
+	forbidList   bool
+	want         CompatState
+	wantInMsg    []string
+}
+
 func TestCheckInstalled(t *testing.T) {
-	tests := []struct {
-		name         string
-		images       []string
-		skipCRD      string
-		alphaOnlyCRD string
-		forbidList   bool
-		want         CompatState
-		wantInMsg    []string
-	}{
+	tests := []installedCase{
 		{name: "v1.0.9", images: []string{compatRepo + ":v1.0.9"}, want: CompatSupported, wantInMsg: []string{"v1.0.9"}},
 		{name: "v1.0.12", images: []string{compatRepo + ":v1.0.12"}, want: CompatSupported, wantInMsg: []string{"v1.0.12"}},
 		{name: "v1.0.8", images: []string{compatRepo + ":v1.0.8"}, want: CompatUnsupported, wantInMsg: []string{"v1.0.8", MinAgentSandboxVersion, MaxAgentSandboxVersion}},
@@ -53,30 +55,9 @@ func TestCheckInstalled(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var objs []client.Object
-			for _, name := range agentSandboxCRDs {
-				if name == tt.skipCRD {
-					continue
-				}
-				version := agentSandboxServedVersion
-				if name == tt.alphaOnlyCRD {
-					version = "v1alpha1"
-				}
-				objs = append(objs, compatCRD(name, version))
-			}
-			for i, image := range tt.images {
-				objs = append(objs, compatDeployment(i, image))
-			}
-			b := fake.NewClientBuilder().WithScheme(compatScheme(t)).WithObjects(objs...)
+			b := fake.NewClientBuilder().WithScheme(compatScheme(t)).WithObjects(tt.objects()...)
 			if tt.forbidList {
-				b = b.WithInterceptorFuncs(interceptor.Funcs{
-					List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
-						if _, ok := list.(*appsv1.DeploymentList); ok {
-							return apierrors.NewForbidden(schema.GroupResource{Group: "apps", Resource: "deployments"}, "", nil)
-						}
-						return c.List(ctx, list, opts...)
-					},
-				})
+				b = b.WithInterceptorFuncs(interceptor.Funcs{List: forbidDeploymentList})
 			}
 
 			got := CheckInstalled(t.Context(), b.Build(), compatNamespace)
@@ -91,6 +72,31 @@ func TestCheckInstalled(t *testing.T) {
 			}
 		})
 	}
+}
+
+func (tt installedCase) objects() []client.Object {
+	var objs []client.Object
+	for _, name := range agentSandboxCRDs {
+		if name == tt.skipCRD {
+			continue
+		}
+		version := agentSandboxServedVersion
+		if name == tt.alphaOnlyCRD {
+			version = "v1alpha1"
+		}
+		objs = append(objs, compatCRD(name, version))
+	}
+	for i, image := range tt.images {
+		objs = append(objs, compatDeployment(i, image))
+	}
+	return objs
+}
+
+func forbidDeploymentList(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+	if _, ok := list.(*appsv1.DeploymentList); ok {
+		return apierrors.NewForbidden(schema.GroupResource{Group: "apps", Resource: "deployments"}, "", nil)
+	}
+	return c.List(ctx, list, opts...)
 }
 
 func compatScheme(t *testing.T) *runtime.Scheme {

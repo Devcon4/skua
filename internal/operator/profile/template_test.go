@@ -253,26 +253,37 @@ func TestNoSecretReferences(t *testing.T) {
 	for _, p := range []*v1alpha1.AgentProfile{testProfile(), storageClassProfile()} {
 		spec := Template(p, testConfig()).Spec.PodTemplate.Spec
 		for _, v := range spec.Volumes {
-			if v.Secret != nil {
-				t.Errorf("volume %s references Secret %s", v.Name, v.Secret.SecretName)
-			}
-			if v.Projected != nil {
-				for _, s := range v.Projected.Sources {
-					if s.Secret != nil {
-						t.Errorf("volume %s projects Secret %s", v.Name, s.Secret.Name)
-					}
-				}
-			}
+			checkVolumeMountsNoSecret(t, v)
 		}
 		for _, c := range slices.Concat(spec.InitContainers, spec.Containers) {
-			if len(c.EnvFrom) != 0 {
-				t.Errorf("container %s envFrom = %+v", c.Name, c.EnvFrom)
-			}
-			for _, e := range c.Env {
-				if e.ValueFrom != nil {
-					t.Errorf("container %s env %s uses valueFrom", c.Name, e.Name)
-				}
-			}
+			checkContainerEnvNoSecret(t, c)
+		}
+	}
+}
+
+func checkVolumeMountsNoSecret(t *testing.T, v corev1.Volume) {
+	t.Helper()
+	if v.Secret != nil {
+		t.Errorf("volume %s references Secret %s", v.Name, v.Secret.SecretName)
+	}
+	if v.Projected == nil {
+		return
+	}
+	for _, s := range v.Projected.Sources {
+		if s.Secret != nil {
+			t.Errorf("volume %s projects Secret %s", v.Name, s.Secret.Name)
+		}
+	}
+}
+
+func checkContainerEnvNoSecret(t *testing.T, c corev1.Container) {
+	t.Helper()
+	if len(c.EnvFrom) != 0 {
+		t.Errorf("container %s envFrom = %+v", c.Name, c.EnvFrom)
+	}
+	for _, e := range c.Env {
+		if e.ValueFrom != nil {
+			t.Errorf("container %s env %s uses valueFrom", c.Name, e.Name)
 		}
 	}
 }

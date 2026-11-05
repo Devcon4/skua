@@ -97,16 +97,19 @@ func Helper(args []string, stdin io.Reader, stdout, stderr io.Writer, now time.T
 	if len(args) == 0 || args[0] != "get" || !forgeRequest(os.Getenv(sandbox.EnvForgeGitURL), req) {
 		return 0
 	}
-	out := "quit=1\n"
-	if t, err := currentToken(now); err != nil {
-		_, _ = fmt.Fprintln(stderr, err)
-	} else {
-		out = "username=x-access-token\npassword=" + t.Token + "\n"
-	}
-	if _, err := io.WriteString(stdout, out); err != nil {
+	if _, err := io.WriteString(stdout, credentialReply(now, stderr)); err != nil {
 		return 1
 	}
 	return 0
+}
+
+func credentialReply(now time.Time, stderr io.Writer) string {
+	t, err := currentToken(now)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, err)
+		return "quit=1\n"
+	}
+	return "username=x-access-token\npassword=" + t.Token + "\n"
 }
 
 func forgeRequest(forgeURL string, req map[string]string) bool {

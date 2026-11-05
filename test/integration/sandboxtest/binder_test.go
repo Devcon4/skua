@@ -167,158 +167,172 @@ func assertBound(t *testing.T, pod *corev1.Pod, claim *extv1beta1.SandboxClaim) 
 func TestBinder(t *testing.T) {
 	e := startEnv(t, 30*time.Second)
 
-	t.Run("claim adopts a ready pool pod and keeps its creation time", func(t *testing.T) {
-		pool := e.createPool(t, "skua-warm")
-		e.binder.SetPoolReady(pool, 1)
-		if st := e.poolStatus(t, pool); st.ReadyReplicas != 1 || st.Replicas != 1 {
-			t.Fatalf("pool status after SetPoolReady = %+v, want 1 ready", st)
-		}
-		var pods corev1.PodList
-		if err := e.c.List(t.Context(), &pods, client.InNamespace(testNamespace),
-			client.MatchingLabels{"skua.dev/profile": "skua-warm"}); err != nil {
-			t.Fatalf("list pool pods: %v", err)
-		}
-		if len(pods.Items) != 1 || pods.Items[0].Status.Phase != corev1.PodRunning {
-			t.Fatalf("pool pods = %d, want one Running", len(pods.Items))
-		}
-		warm := pods.Items[0]
-		e.createClaim(t, "run-warm", pool.Name)
-		claim := e.waitReady(t, "run-warm")
-		pod, ok := e.pod(t, warm.Name)
-		if !ok {
-			t.Fatalf("pool pod %s is gone", warm.Name)
-		}
-		if pod.UID != warm.UID || !pod.CreationTimestamp.Equal(&warm.CreationTimestamp) {
-			t.Errorf("adopted pod uid %s created %s, want uid %s created %s", pod.UID, pod.CreationTimestamp, warm.UID, warm.CreationTimestamp)
-		}
-		assertBound(t, pod, claim)
-		if got := claim.Annotations[extv1beta1.AssignedSandboxNameAnnotation]; got != warm.Name {
-			t.Errorf("claim sandbox-name annotation = %q, want %q", got, warm.Name)
-		}
-		if _, ok := pod.Labels[sandboxv1beta1.SandboxWarmPoolLabel]; ok {
-			t.Error("adopted pod still carries the warm pool label")
-		}
-		if st := e.poolStatus(t, pool); st.ReadyReplicas != 0 {
-			t.Errorf("pool readyReplicas after adoption = %d, want 0", st.ReadyReplicas)
-		}
-	})
+	t.Run("claim adopts a ready pool pod and keeps its creation time", func(t *testing.T) { testClaimAdoptsWarmPod(t, e) })
 
-	t.Run("claim with no pool pod is bound after ColdDelay", func(t *testing.T) {
-		pool := e.createPool(t, "skua-cold")
-		claimKey := client.ObjectKeyFromObject(e.createClaim(t, "run-cold", pool.Name))
-		eventually(t, "binder waiting on run-cold", func() bool { return e.binder.Waiting(claimKey) })
-		time.Sleep(200 * time.Millisecond)
-		if _, ok := e.pod(t, "run-cold"); ok {
-			t.Fatal("pod created before ColdDelay passed on the clock")
-		}
-		e.clock.Step(30 * time.Second)
-		claim := e.waitReady(t, "run-cold")
-		eventually(t, "binder done waiting on run-cold", func() bool { return !e.binder.Waiting(claimKey) })
-		pod, ok := e.pod(t, "run-cold")
-		if !ok {
-			t.Fatal("no pod for the cold claim")
-		}
-		assertBound(t, pod, claim)
-		if _, ok := claim.Annotations[extv1beta1.AssignedSandboxNameAnnotation]; ok {
-			t.Error("cold claim has a sandbox-name annotation")
-		}
-		if pod.Labels["skua.dev/profile"] != "skua-cold" || pod.Spec.Containers[0].Name != "agent" {
-			t.Errorf("cold pod not built from the template: labels %v", pod.Labels)
-		}
-	})
+	t.Run("claim with no pool pod is bound after ColdDelay", func(t *testing.T) { testColdClaimBoundAfterDelay(t, e) })
 
-	t.Run("Evict fails the pod with the message", func(t *testing.T) {
-		pool := e.createPool(t, "skua-evict")
-		e.binder.SetPoolReady(pool, 1)
-		e.createClaim(t, "run-evict", pool.Name)
-		claim := e.waitReady(t, "run-evict")
-		key := client.ObjectKey{Namespace: testNamespace, Name: claim.Status.SandboxStatus.Name}
-		e.binder.Evict(key, "The node was low on resource: memory.")
-		pod, _ := e.pod(t, key.Name)
-		if pod.Status.Phase != corev1.PodFailed || pod.Status.Reason != "Evicted" || pod.Status.Message != "The node was low on resource: memory." {
-			t.Errorf("evicted pod status = %s/%s %q", pod.Status.Phase, pod.Status.Reason, pod.Status.Message)
-		}
-	})
+	t.Run("Evict fails the pod with the message", func(t *testing.T) { testEvictFailsPod(t, e) })
 
-	t.Run("RestartContainer sets restartCount", func(t *testing.T) {
-		pool := e.createPool(t, "skua-restart")
-		e.binder.SetPoolReady(pool, 1)
-		e.createClaim(t, "run-restart", pool.Name)
-		claim := e.waitReady(t, "run-restart")
-		key := client.ObjectKey{Namespace: testNamespace, Name: claim.Status.SandboxStatus.Name}
-		e.binder.RestartContainer(key, 2)
-		pod, _ := e.pod(t, key.Name)
-		if got := pod.Status.ContainerStatuses[0].RestartCount; got != 2 {
-			t.Errorf("restartCount = %d, want 2", got)
-		}
-		if pod.Status.Phase != corev1.PodRunning {
-			t.Errorf("phase after restarts = %s, want Running", pod.Status.Phase)
-		}
-	})
+	t.Run("RestartContainer sets restartCount", func(t *testing.T) { testRestartContainerSetsCount(t, e) })
 
-	t.Run("DeletePod recreates the pod with a new UID and the same binding", func(t *testing.T) {
-		pool := e.createPool(t, "skua-replaced")
-		e.binder.SetPoolReady(pool, 1)
-		e.createClaim(t, "run-replaced", pool.Name)
-		claim := e.waitReady(t, "run-replaced")
-		podName := claim.Status.SandboxStatus.Name
-		old, _ := e.pod(t, podName)
-		e.binder.DeletePod(client.ObjectKey{Namespace: testNamespace, Name: podName})
-		pod, ok := e.pod(t, podName)
-		if !ok {
-			t.Fatal("pod not recreated after DeletePod")
-		}
-		if pod.UID == old.UID {
-			t.Errorf("recreated pod kept uid %s", old.UID)
-		}
-		assertBound(t, pod, claim)
-		if pod.Labels["skua.dev/profile"] != "skua-replaced" {
-			t.Errorf("recreated pod labels = %v, want the original labels", pod.Labels)
-		}
-		if pod.Status.Phase != corev1.PodRunning {
-			t.Errorf("recreated pod phase = %s, want Running", pod.Status.Phase)
-		}
-	})
+	t.Run("DeletePod recreates the pod with a new UID and the same binding", func(t *testing.T) { testDeletePodRecreates(t, e) })
 
-	t.Run("LosePod removes the pod and the claim is not rebound", func(t *testing.T) {
-		pool := e.createPool(t, "skua-lost")
-		e.binder.SetPoolReady(pool, 1)
-		e.createClaim(t, "run-lost", pool.Name)
-		claim := e.waitReady(t, "run-lost")
-		podName := claim.Status.SandboxStatus.Name
-		e.binder.LosePod(client.ObjectKey{Namespace: testNamespace, Name: podName})
-		if _, ok := e.pod(t, podName); ok {
-			t.Fatal("pod still exists after LosePod")
-		}
-		e.binder.SetPoolReady(pool, 1)
-		e.clock.Step(time.Minute)
-		claim.Labels = map[string]string{"touched": "true"}
-		if err := e.c.Update(t.Context(), claim); err != nil {
-			t.Fatalf("touch claim: %v", err)
-		}
-		time.Sleep(300 * time.Millisecond)
-		var pods corev1.PodList
-		if err := e.c.List(t.Context(), &pods, client.InNamespace(testNamespace),
-			client.MatchingLabels{extv1beta1.SandboxIDLabel: string(claim.UID)}); err != nil {
-			t.Fatalf("list pods: %v", err)
-		}
-		if len(pods.Items) != 0 {
-			t.Errorf("claim was rebound to %s after LosePod", pods.Items[0].Name)
-		}
-	})
+	t.Run("LosePod removes the pod and the claim is not rebound", func(t *testing.T) { testLosePodNotRebound(t, e) })
 
-	t.Run("deleting the claim removes its pod", func(t *testing.T) {
-		pool := e.createPool(t, "skua-delete")
-		e.binder.SetPoolReady(pool, 1)
-		claim := e.createClaim(t, "run-delete", pool.Name)
-		bound := e.waitReady(t, "run-delete")
-		podName := bound.Status.SandboxStatus.Name
-		if err := e.c.Delete(t.Context(), claim); err != nil {
-			t.Fatalf("delete claim: %v", err)
-		}
-		eventually(t, "pod "+podName+" deleted", func() bool {
-			_, ok := e.pod(t, podName)
-			return !ok
-		})
+	t.Run("deleting the claim removes its pod", func(t *testing.T) { testDeleteClaimRemovesPod(t, e) })
+}
+
+func testClaimAdoptsWarmPod(t *testing.T, e *env) {
+	pool := e.createPool(t, "skua-warm")
+	e.binder.SetPoolReady(pool, 1)
+	if st := e.poolStatus(t, pool); st.ReadyReplicas != 1 || st.Replicas != 1 {
+		t.Fatalf("pool status after SetPoolReady = %+v, want 1 ready", st)
+	}
+	var pods corev1.PodList
+	if err := e.c.List(t.Context(), &pods, client.InNamespace(testNamespace),
+		client.MatchingLabels{"skua.dev/profile": "skua-warm"}); err != nil {
+		t.Fatalf("list pool pods: %v", err)
+	}
+	if len(pods.Items) != 1 || pods.Items[0].Status.Phase != corev1.PodRunning {
+		t.Fatalf("pool pods = %d, want one Running", len(pods.Items))
+	}
+	warm := pods.Items[0]
+	e.createClaim(t, "run-warm", pool.Name)
+	claim := e.waitReady(t, "run-warm")
+	pod, ok := e.pod(t, warm.Name)
+	if !ok {
+		t.Fatalf("pool pod %s is gone", warm.Name)
+	}
+	if pod.UID != warm.UID || !pod.CreationTimestamp.Equal(&warm.CreationTimestamp) {
+		t.Errorf("adopted pod uid %s created %s, want uid %s created %s", pod.UID, pod.CreationTimestamp, warm.UID, warm.CreationTimestamp)
+	}
+	assertBound(t, pod, claim)
+	if got := claim.Annotations[extv1beta1.AssignedSandboxNameAnnotation]; got != warm.Name {
+		t.Errorf("claim sandbox-name annotation = %q, want %q", got, warm.Name)
+	}
+	if _, ok := pod.Labels[sandboxv1beta1.SandboxWarmPoolLabel]; ok {
+		t.Error("adopted pod still carries the warm pool label")
+	}
+	if st := e.poolStatus(t, pool); st.ReadyReplicas != 0 {
+		t.Errorf("pool readyReplicas after adoption = %d, want 0", st.ReadyReplicas)
+	}
+}
+
+func testColdClaimBoundAfterDelay(t *testing.T, e *env) {
+	pool := e.createPool(t, "skua-cold")
+	claimKey := client.ObjectKeyFromObject(e.createClaim(t, "run-cold", pool.Name))
+	eventually(t, "binder waiting on run-cold", func() bool { return e.binder.Waiting(claimKey) })
+	time.Sleep(200 * time.Millisecond)
+	if _, ok := e.pod(t, "run-cold"); ok {
+		t.Fatal("pod created before ColdDelay passed on the clock")
+	}
+	e.clock.Step(30 * time.Second)
+	claim := e.waitReady(t, "run-cold")
+	eventually(t, "binder done waiting on run-cold", func() bool { return !e.binder.Waiting(claimKey) })
+	pod, ok := e.pod(t, "run-cold")
+	if !ok {
+		t.Fatal("no pod for the cold claim")
+	}
+	assertBound(t, pod, claim)
+	if _, ok := claim.Annotations[extv1beta1.AssignedSandboxNameAnnotation]; ok {
+		t.Error("cold claim has a sandbox-name annotation")
+	}
+	if pod.Labels["skua.dev/profile"] != "skua-cold" || pod.Spec.Containers[0].Name != "agent" {
+		t.Errorf("cold pod not built from the template: labels %v", pod.Labels)
+	}
+}
+
+func testEvictFailsPod(t *testing.T, e *env) {
+	pool := e.createPool(t, "skua-evict")
+	e.binder.SetPoolReady(pool, 1)
+	e.createClaim(t, "run-evict", pool.Name)
+	claim := e.waitReady(t, "run-evict")
+	key := client.ObjectKey{Namespace: testNamespace, Name: claim.Status.SandboxStatus.Name}
+	e.binder.Evict(key, "The node was low on resource: memory.")
+	pod, _ := e.pod(t, key.Name)
+	if pod.Status.Phase != corev1.PodFailed || pod.Status.Reason != "Evicted" || pod.Status.Message != "The node was low on resource: memory." {
+		t.Errorf("evicted pod status = %s/%s %q", pod.Status.Phase, pod.Status.Reason, pod.Status.Message)
+	}
+}
+
+func testRestartContainerSetsCount(t *testing.T, e *env) {
+	pool := e.createPool(t, "skua-restart")
+	e.binder.SetPoolReady(pool, 1)
+	e.createClaim(t, "run-restart", pool.Name)
+	claim := e.waitReady(t, "run-restart")
+	key := client.ObjectKey{Namespace: testNamespace, Name: claim.Status.SandboxStatus.Name}
+	e.binder.RestartContainer(key, 2)
+	pod, _ := e.pod(t, key.Name)
+	if got := pod.Status.ContainerStatuses[0].RestartCount; got != 2 {
+		t.Errorf("restartCount = %d, want 2", got)
+	}
+	if pod.Status.Phase != corev1.PodRunning {
+		t.Errorf("phase after restarts = %s, want Running", pod.Status.Phase)
+	}
+}
+
+func testDeletePodRecreates(t *testing.T, e *env) {
+	pool := e.createPool(t, "skua-replaced")
+	e.binder.SetPoolReady(pool, 1)
+	e.createClaim(t, "run-replaced", pool.Name)
+	claim := e.waitReady(t, "run-replaced")
+	podName := claim.Status.SandboxStatus.Name
+	old, _ := e.pod(t, podName)
+	e.binder.DeletePod(client.ObjectKey{Namespace: testNamespace, Name: podName})
+	pod, ok := e.pod(t, podName)
+	if !ok {
+		t.Fatal("pod not recreated after DeletePod")
+	}
+	if pod.UID == old.UID {
+		t.Errorf("recreated pod kept uid %s", old.UID)
+	}
+	assertBound(t, pod, claim)
+	if pod.Labels["skua.dev/profile"] != "skua-replaced" {
+		t.Errorf("recreated pod labels = %v, want the original labels", pod.Labels)
+	}
+	if pod.Status.Phase != corev1.PodRunning {
+		t.Errorf("recreated pod phase = %s, want Running", pod.Status.Phase)
+	}
+}
+
+func testLosePodNotRebound(t *testing.T, e *env) {
+	pool := e.createPool(t, "skua-lost")
+	e.binder.SetPoolReady(pool, 1)
+	e.createClaim(t, "run-lost", pool.Name)
+	claim := e.waitReady(t, "run-lost")
+	podName := claim.Status.SandboxStatus.Name
+	e.binder.LosePod(client.ObjectKey{Namespace: testNamespace, Name: podName})
+	if _, ok := e.pod(t, podName); ok {
+		t.Fatal("pod still exists after LosePod")
+	}
+	e.binder.SetPoolReady(pool, 1)
+	e.clock.Step(time.Minute)
+	claim.Labels = map[string]string{"touched": "true"}
+	if err := e.c.Update(t.Context(), claim); err != nil {
+		t.Fatalf("touch claim: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	var pods corev1.PodList
+	if err := e.c.List(t.Context(), &pods, client.InNamespace(testNamespace),
+		client.MatchingLabels{extv1beta1.SandboxIDLabel: string(claim.UID)}); err != nil {
+		t.Fatalf("list pods: %v", err)
+	}
+	if len(pods.Items) != 0 {
+		t.Errorf("claim was rebound to %s after LosePod", pods.Items[0].Name)
+	}
+}
+
+func testDeleteClaimRemovesPod(t *testing.T, e *env) {
+	pool := e.createPool(t, "skua-delete")
+	e.binder.SetPoolReady(pool, 1)
+	claim := e.createClaim(t, "run-delete", pool.Name)
+	bound := e.waitReady(t, "run-delete")
+	podName := bound.Status.SandboxStatus.Name
+	if err := e.c.Delete(t.Context(), claim); err != nil {
+		t.Fatalf("delete claim: %v", err)
+	}
+	eventually(t, "pod "+podName+" deleted", func() bool {
+		_, ok := e.pod(t, podName)
+		return !ok
 	})
 }
