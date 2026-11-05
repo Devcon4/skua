@@ -177,6 +177,22 @@ func TestRunKeyCannotManageKeys(t *testing.T) {
 	}
 }
 
+func TestAgentRootFilesystemReadOnly(t *testing.T) {
+	t.Parallel()
+	c := apiClient{token: login(t, s28User)}
+	run := startRun(t, c, s28Profile, "SCRIPT:sleep 120", runOpts{})
+	waitPhase(t, run.Name, v1alpha1.PhaseRunning, "", s28RunTimeout)
+	pod := podOf(t, run.Name)
+	if out, err := execIn(t, pod, "touch", "/usr/s28-probe"); err == nil {
+		t.Errorf("touch /usr/s28-probe succeeded, want a read-only root filesystem: %s", out)
+	}
+	for _, dir := range []string{"/tmp", sandbox.WorkDir, sandbox.RunDir} {
+		if out, err := execIn(t, pod, "touch", dir+"/s28-probe"); err != nil {
+			t.Errorf("touch %s/s28-probe: %v: %s", dir, err, out)
+		}
+	}
+}
+
 func TestRunnerCannotPostForOtherRun(t *testing.T) {
 	t.Parallel()
 	c := apiClient{token: login(t, s28User)}

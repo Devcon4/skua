@@ -120,6 +120,7 @@ func TestPodSecurity(t *testing.T) {
 	}
 	for _, c := range slices.Concat(spec.InitContainers, spec.Containers) {
 		if c.SecurityContext == nil || ptr.Deref(c.SecurityContext.AllowPrivilegeEscalation, true) ||
+			!ptr.Deref(c.SecurityContext.ReadOnlyRootFilesystem, false) ||
 			c.SecurityContext.Capabilities == nil || !reflect.DeepEqual(c.SecurityContext.Capabilities.Drop, []corev1.Capability{"ALL"}) {
 			t.Errorf("container %s securityContext = %+v", c.Name, c.SecurityContext)
 		}
@@ -187,6 +188,7 @@ func TestAgentMounts(t *testing.T) {
 		{Name: sandbox.VolumeBin, MountPath: "/skua/bin", ReadOnly: true},
 		{Name: sandbox.VolumeRun, MountPath: "/skua/run"},
 		{Name: sandbox.VolumeWorkspace, MountPath: "/work"},
+		{Name: sandbox.VolumeWorkspace, MountPath: "/tmp", SubPath: ".tmp"},
 		{Name: sandbox.VolumeToken, MountPath: "/var/run/secrets/skua", ReadOnly: true},
 	}
 	if !reflect.DeepEqual(c.VolumeMounts, want) {
