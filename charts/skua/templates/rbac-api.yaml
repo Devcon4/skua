@@ -1,0 +1,100 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: skua-api-auth-delegator
+  labels:
+    {{- include "skua.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  {{- include "skua.apiSubject" . | nindent 2 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: skua-api
+  labels:
+    {{- include "skua.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+  - apiGroups: ["skua.dev"]
+    resources: ["agentprofiles"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: skua-api
+  labels:
+    {{- include "skua.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: skua-api
+subjects:
+  {{- include "skua.apiSubject" . | nindent 2 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: skua-api
+  namespace: {{ include "skua.runNamespace" . }}
+  labels:
+    {{- include "skua.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["skua.dev"]
+    resources: ["agentruns"]
+    verbs: ["create", "get", "list", "patch", "watch"]
+  - apiGroups: ["skua.dev"]
+    resources: ["agentruns/status"]
+    verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: skua-api
+  namespace: {{ include "skua.runNamespace" . }}
+  labels:
+    {{- include "skua.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: skua-api
+subjects:
+  {{- include "skua.apiSubject" . | nindent 2 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: skua-api-sandbox-reader
+  namespace: {{ include "skua.sandboxNamespace" . }}
+  labels:
+    {{- include "skua.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get"]
+  - apiGroups: ["extensions.agents.x-k8s.io"]
+    resources: ["sandboxclaims"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: skua-api-sandbox-reader
+  namespace: {{ include "skua.sandboxNamespace" . }}
+  labels:
+    {{- include "skua.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: skua-api-sandbox-reader
+subjects:
+  {{- include "skua.apiSubject" . | nindent 2 }}

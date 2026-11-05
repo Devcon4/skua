@@ -1,0 +1,7 @@
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        "*": hash-pin
+  self-repository:
+    disable: true

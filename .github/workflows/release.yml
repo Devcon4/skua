@@ -1,0 +1,136 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+  packages: write
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  YQ_VERSION: v4.54.1
+  YQ_SHA256: 8e34fc298390875de416e6a4afcb8cabeceb25d9aa8506c1a2f9353cf702ea5f
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+        with:
+          version: 2026.11.1
+          install_args: helm kustomize
+          cache: false
+
+      - name: Resolve version and owner
+        id: meta
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "owner=${OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and push skua
+        id: skua
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          build-args: VERSION=${{ steps.meta.outputs.version }}
+          push: true
+          tags: ghcr.io/${{ steps.meta.outputs.owner }}/skua:${{ steps.meta.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.description=skua operator, API and runner
+
+      - name: Build and push skua-agent-generic
+        id: generic
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: images/generic
+          file: images/generic/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/${{ steps.meta.outputs.owner }}/skua-agent-generic:${{ steps.meta.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.description=skua generic agent image (git, gh, omp)
+
+      - name: Bundle CRDs
+        run: make crds-bundle
+
+      - name: Install yq
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/yq" "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          echo "${YQ_SHA256}  $RUNNER_TEMP/yq" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/yq"
+
+      - name: Package chart
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          IMAGE_REPOSITORY: ghcr.io/${{ steps.meta.outputs.owner }}/skua
+          IMAGE_DIGEST: ${{ steps.skua.outputs.digest }}
+        run: |
+          chart="$RUNNER_TEMP/chart/skua"
+          mkdir -p "$RUNNER_TEMP/chart"
+          cp -R charts/skua "$chart"
+          "$RUNNER_TEMP/yq" -i '.version = strenv(VERSION) | .appVersion = strenv(VERSION)' "$chart/Chart.yaml"
+          "$RUNNER_TEMP/yq" -i '.image.repository = strenv(IMAGE_REPOSITORY) | .image.digest = strenv(IMAGE_DIGEST) | .image.digest style=""' "$chart/values.yaml"
+          helm package "$chart" --destination dist
+          test -f "dist/skua-${VERSION}.tgz"
+
+      - name: Push chart
+        id: chart
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          OWNER: ${{ steps.meta.outputs.owner }}
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: |
+          printf '%s' "$REGISTRY_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          helm push "dist/skua-${VERSION}.tgz" "oci://ghcr.io/${OWNER}/charts" 2>&1 | tee "$RUNNER_TEMP/helm-push.log"
+          digest="$(sed -n 's/^Digest: //p' "$RUNNER_TEMP/helm-push.log")"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Write digests
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          OWNER: ${{ steps.meta.outputs.owner }}
+          SKUA_DIGEST: ${{ steps.skua.outputs.digest }}
+          GENERIC_DIGEST: ${{ steps.generic.outputs.digest }}
+          CHART_DIGEST: ${{ steps.chart.outputs.digest }}
+        run: |
+          {
+            echo "ghcr.io/${OWNER}/skua:${VERSION}@${SKUA_DIGEST}"
+            echo "ghcr.io/${OWNER}/skua-agent-generic:${VERSION}@${GENERIC_DIGEST}"
+            echo "ghcr.io/${OWNER}/charts/skua:${VERSION}@${CHART_DIGEST}"
+          } > dist/digests.txt
+          cat dist/digests.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          gh release create "v${VERSION}" dist/skua-crds.yaml "dist/skua-${VERSION}.tgz" dist/digests.txt --verify-tag --generate-notes

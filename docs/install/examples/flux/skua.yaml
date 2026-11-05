@@ -1,0 +1,102 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: skua
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://github.com/Devcon4/skua
+  ref:
+    tag: v<version>
+  ignore: |
+    /*
+    !/config/crd/
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: skua-crds
+  namespace: flux-system
+spec:
+  interval: 1h
+  sourceRef: { kind: GitRepository, name: skua }
+  path: ./config/crd
+  prune: false
+  wait: true
+  timeout: 5m
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: skua
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: oci://ghcr.io/devcon4/charts/skua
+  ref:
+    tag: "<version>"
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: skua
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: skua-crds
+    - name: agent-sandbox
+  interval: 1h
+  sourceRef: { kind: GitRepository, name: flux-system }
+  path: ./infrastructure/skua
+  prune: true
+  wait: true
+  timeout: 5m
+---
+# Commit this HelmRelease under ./infrastructure/skua in the flux-system repository.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: skua
+  namespace: flux-system
+spec:
+  interval: 1h
+  releaseName: skua
+  targetNamespace: skua
+  chartRef:
+    kind: OCIRepository
+    name: skua
+  install:
+    crds: Skip
+    createNamespace: true
+  upgrade:
+    crds: Skip
+  values:
+    config:
+      oidc:
+        issuerURL: "<oidc-issuer-url>"
+        audience: "<omp-extension-client-id>"
+      gateway:
+        baseURL: "<litellm-base-url>"
+        operatorKeySecret:
+          namespace: skua-system
+          name: "<litellm-operator-key-secret>"
+          key: "<litellm-operator-key-secret-key>"
+        egress:
+          namespace: "<litellm-namespace>"
+          podLabels:
+            app.kubernetes.io/name: "<litellm-pod-label>"
+          port: 4000
+      github:
+        appSecret:
+          namespace: flux-system
+          name: "<flux-github-app-secret>"
+          appIDKey: githubAppID
+          installationIDKey: githubAppInstallationID
+          privateKeyKey: githubAppPrivateKey
+      network:
+        podCIDRs: ["<pod-cidr>"]
+        serviceCIDRs: ["<service-cidr>"]
+        nodeCIDRs: ["<node-cidr>"]

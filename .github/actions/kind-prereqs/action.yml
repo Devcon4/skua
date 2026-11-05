@@ -1,0 +1,17 @@
+name: kind prerequisites
+description: Makes /dev/kvm usable by the runner user when the host has it. Without /dev/kvm, tools/kindenv up uses the runsc platform systrap.
+
+runs:
+  using: composite
+  steps:
+    - name: Make /dev/kvm usable by the runner user
+      shell: bash
+      run: |
+        if [[ -e /dev/kvm ]]; then
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+        else
+          echo "no /dev/kvm on this runner; tools/kindenv up uses the runsc platform systrap"
+        fi
