@@ -281,57 +281,74 @@ type grantKey struct {
 
 func grants(t *testing.T, objs manifestSet, scopeOf func(string) string) map[grantKey]map[ruleAtom]bool {
 	t.Helper()
-	clusterRoles := map[string][]rbacv1.PolicyRule{}
-	for _, u := range objs.ofKind("ClusterRole") {
-		cr := convert[rbacv1.ClusterRole](t, u)
-		clusterRoles[cr.Name] = cr.Rules
-	}
-	roles := map[string][]rbacv1.PolicyRule{}
-	for _, u := range objs.ofKind("Role") {
-		r := convert[rbacv1.Role](t, u)
-		roles[r.Namespace+"/"+r.Name] = r.Rules
-	}
-	out := map[grantKey]map[ruleAtom]bool{}
-	add := func(subjects []rbacv1.Subject, scope string, set map[ruleAtom]bool) {
-		for _, s := range subjects {
-			for _, account := range []string{operatorAccount, apiAccount} {
-				if !isAccount(s, account) {
-					continue
-				}
-				k := grantKey{account, scope}
-				if out[k] == nil {
-					out[k] = map[ruleAtom]bool{}
-				}
-				for a := range set {
-					out[k][a] = true
-				}
-			}
-		}
-	}
-	resolve := func(ref rbacv1.RoleRef, namespace, binding string) map[ruleAtom]bool {
-		switch ref.Kind {
-		case "ClusterRole":
-			if rules, ok := clusterRoles[ref.Name]; ok {
-				return atoms(rules)
-			}
-			return map[ruleAtom]bool{{ref: "ClusterRole/" + ref.Name}: true}
-		case "Role":
-			if rules, ok := roles[namespace+"/"+ref.Name]; ok {
-				return atoms(rules)
-			}
-		}
-		t.Errorf("%s refers to %s %s, which is not in the manifests", binding, ref.Kind, ref.Name)
-		return nil
-	}
+	rules := indexRoleRules(t, objs)
+	out := grantTable{}
 	for _, u := range objs.ofKind("ClusterRoleBinding") {
 		b := convert[rbacv1.ClusterRoleBinding](t, u)
-		add(b.Subjects, "cluster", resolve(b.RoleRef, "", "ClusterRoleBinding "+b.Name))
+		out.add(b.Subjects, "cluster", rules.resolve(t, b.RoleRef, "", "ClusterRoleBinding "+b.Name))
 	}
 	for _, u := range objs.ofKind("RoleBinding") {
 		b := convert[rbacv1.RoleBinding](t, u)
-		add(b.Subjects, scopeOf(b.Namespace), resolve(b.RoleRef, b.Namespace, "RoleBinding "+b.Namespace+"/"+b.Name))
+		out.add(b.Subjects, scopeOf(b.Namespace), rules.resolve(t, b.RoleRef, b.Namespace, "RoleBinding "+b.Namespace+"/"+b.Name))
 	}
 	return out
+}
+
+type roleRules struct {
+	clusterRoles map[string][]rbacv1.PolicyRule
+	roles        map[string][]rbacv1.PolicyRule
+}
+
+func indexRoleRules(t *testing.T, objs manifestSet) roleRules {
+	t.Helper()
+	idx := roleRules{clusterRoles: map[string][]rbacv1.PolicyRule{}, roles: map[string][]rbacv1.PolicyRule{}}
+	for _, u := range objs.ofKind("ClusterRole") {
+		cr := convert[rbacv1.ClusterRole](t, u)
+		idx.clusterRoles[cr.Name] = cr.Rules
+	}
+	for _, u := range objs.ofKind("Role") {
+		r := convert[rbacv1.Role](t, u)
+		idx.roles[r.Namespace+"/"+r.Name] = r.Rules
+	}
+	return idx
+}
+
+func (idx roleRules) resolve(t *testing.T, ref rbacv1.RoleRef, namespace, binding string) map[ruleAtom]bool {
+	t.Helper()
+	switch ref.Kind {
+	case "ClusterRole":
+		if rules, ok := idx.clusterRoles[ref.Name]; ok {
+			return atoms(rules)
+		}
+		return map[ruleAtom]bool{{ref: "ClusterRole/" + ref.Name}: true}
+	case "Role":
+		if rules, ok := idx.roles[namespace+"/"+ref.Name]; ok {
+			return atoms(rules)
+		}
+	}
+	t.Errorf("%s refers to %s %s, which is not in the manifests", binding, ref.Kind, ref.Name)
+	return nil
+}
+
+type grantTable map[grantKey]map[ruleAtom]bool
+
+func (g grantTable) add(subjects []rbacv1.Subject, scope string, set map[ruleAtom]bool) {
+	for _, s := range subjects {
+		for _, account := range []string{operatorAccount, apiAccount} {
+			if isAccount(s, account) {
+				g.merge(grantKey{account, scope}, set)
+			}
+		}
+	}
+}
+
+func (g grantTable) merge(k grantKey, set map[ruleAtom]bool) {
+	if g[k] == nil {
+		g[k] = map[ruleAtom]bool{}
+	}
+	for a := range set {
+		g[k][a] = true
+	}
 }
 
 func sortedAtoms(set map[ruleAtom]bool) []string {

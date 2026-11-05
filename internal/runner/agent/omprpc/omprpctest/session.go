@@ -67,17 +67,10 @@ func (a *agent) openSession(c command) {
 		a.out.respond(c.ID, c.Type, nil, err.Error())
 		return
 	}
-	s := &session{path: filepath.Join(c.SessionDir, sessionStateFile)}
-	resumed := false
-	if b, err := os.ReadFile(s.path); err == nil {
-		if err := json.Unmarshal(b, &s.state); err != nil {
-			a.out.respond(c.ID, c.Type, nil, "corrupt session file: "+err.Error())
-			return
-		}
-		resumed = true
-	} else {
-		s.state.ID = randomID()
-		s.state.Provider, s.state.ModelID = defaultModel()
+	s, resumed, err := loadOrCreateSession(filepath.Join(c.SessionDir, sessionStateFile))
+	if err != nil {
+		a.out.respond(c.ID, c.Type, nil, err.Error())
+		return
 	}
 	if c.Provider != "" {
 		s.state.Provider, s.state.ModelID = c.Provider, c.ModelID
@@ -95,6 +88,20 @@ func (a *agent) openSession(c command) {
 		"sessionId":   s.state.ID,
 		"sessionFile": s.path,
 	}, "")
+}
+
+func loadOrCreateSession(path string) (s *session, resumed bool, err error) {
+	s = &session{path: path}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		s.state.ID = randomID()
+		s.state.Provider, s.state.ModelID = defaultModel()
+		return s, false, nil
+	}
+	if err := json.Unmarshal(b, &s.state); err != nil {
+		return nil, false, fmt.Errorf("corrupt session file: %w", err)
+	}
+	return s, true, nil
 }
 
 func randomID() string {

@@ -14,23 +14,25 @@ type chunkAssembly struct {
 	buf        []byte
 }
 
+type rpcChunk struct {
+	ChunkID    string `json:"chunkId"`
+	Index      int    `json:"index"`
+	Count      int    `json:"count"`
+	ByteLength int    `json:"byteLength"`
+	Data       string `json:"data"`
+}
+
 func (c *chunkAssembly) add(line []byte) ([]byte, error) {
-	var f struct {
-		ChunkID    string `json:"chunkId"`
-		Index      int    `json:"index"`
-		Count      int    `json:"count"`
-		ByteLength int    `json:"byteLength"`
-		Data       string `json:"data"`
-	}
+	var f rpcChunk
 	if err := json.Unmarshal(line, &f); err != nil {
 		return nil, fmt.Errorf("decode rpc_chunk: %w", err)
 	}
-	if f.Index == 0 {
-		if f.Count < 1 || f.ByteLength < 1 || f.ByteLength > maxReassembledBytes {
-			return nil, fmt.Errorf("rpc_chunk %s: count %d, byteLength %d out of range", f.ChunkID, f.Count, f.ByteLength)
+	switch {
+	case f.Index == 0:
+		if err := c.start(f); err != nil {
+			return nil, err
 		}
-		*c = chunkAssembly{id: f.ChunkID, count: f.Count, byteLength: f.ByteLength, buf: make([]byte, 0, f.ByteLength)}
-	} else if f.ChunkID != c.id || f.Index != c.next || f.Count != c.count {
+	case !c.continuedBy(f):
 		return nil, fmt.Errorf("rpc_chunk %s index %d out of sequence", f.ChunkID, f.Index)
 	}
 	seg, err := base64.StdEncoding.DecodeString(f.Data)
@@ -51,4 +53,16 @@ func (c *chunkAssembly) add(line []byte) ([]byte, error) {
 	frame := c.buf
 	*c = chunkAssembly{}
 	return frame, nil
+}
+
+func (c *chunkAssembly) start(f rpcChunk) error {
+	if f.Count < 1 || f.ByteLength < 1 || f.ByteLength > maxReassembledBytes {
+		return fmt.Errorf("rpc_chunk %s: count %d, byteLength %d out of range", f.ChunkID, f.Count, f.ByteLength)
+	}
+	*c = chunkAssembly{id: f.ChunkID, count: f.Count, byteLength: f.ByteLength, buf: make([]byte, 0, f.ByteLength)}
+	return nil
+}
+
+func (c *chunkAssembly) continuedBy(f rpcChunk) bool {
+	return f.ChunkID == c.id && f.Index == c.next && f.Count == c.count
 }

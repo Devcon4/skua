@@ -109,13 +109,7 @@ func runTests(m *testing.M) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	code := 1
-	rc := &nodev1.RuntimeClass{ObjectMeta: metav1.ObjectMeta{Name: runtimeClass}, Handler: "runsc"}
-	if err := env.Client.Create(context.Background(), rc); err != nil {
-		fmt.Fprintf(os.Stderr, "create runtime class %s: %v\n", runtimeClass, err)
-	} else {
-		code = m.Run()
-	}
+	code := runSuite(m)
 	if err := env.Stop(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		if code == 0 {
@@ -123,6 +117,15 @@ func runTests(m *testing.M) int {
 		}
 	}
 	return code
+}
+
+func runSuite(m *testing.M) int {
+	rc := &nodev1.RuntimeClass{ObjectMeta: metav1.ObjectMeta{Name: runtimeClass}, Handler: "runsc"}
+	if err := env.Client.Create(context.Background(), rc); err != nil {
+		fmt.Fprintf(os.Stderr, "create runtime class %s: %v\n", runtimeClass, err)
+		return 1
+	}
+	return m.Run()
 }
 
 func writeShims(dir string) error {

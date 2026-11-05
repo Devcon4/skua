@@ -25,11 +25,11 @@ func networkPolicy(cfg *config.Config) *extv1beta1.NetworkPolicySpec {
 	var except4, except6 []string
 	for _, group := range [][]string{cfg.Network.PodCIDRs, cfg.Network.ServiceCIDRs, cfg.Network.NodeCIDRs} {
 		for _, cidr := range group {
-			if ip, _, err := net.ParseCIDR(cidr); err == nil && ip.To4() == nil {
+			if isIPv6CIDR(cidr) {
 				except6 = append(except6, cidr)
-			} else {
-				except4 = append(except4, cidr)
+				continue
 			}
+			except4 = append(except4, cidr)
 		}
 	}
 	external := []networkingv1.NetworkPolicyPeer{{IPBlock: &networkingv1.IPBlock{
@@ -60,6 +60,11 @@ func networkPolicy(cfg *config.Config) *extv1beta1.NetworkPolicySpec {
 		Ingress: []networkingv1.NetworkPolicyIngressRule{},
 		Egress:  egress,
 	}
+}
+
+func isIPv6CIDR(cidr string) bool {
+	ip, _, err := net.ParseCIDR(cidr)
+	return err == nil && ip.To4() == nil
 }
 
 func targetRule(t config.EgressTarget) networkingv1.NetworkPolicyEgressRule {

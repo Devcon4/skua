@@ -92,6 +92,9 @@ and decisions land in `docs/adr/` once made.
   semver, retry and backoff. These use an industry-standard library and are never
   hand-rolled, because they are more complicated than they look. Examples in use:
   `go-oidc`, `go-jose`, `ghinstallation`, `santhosh-tekuri/jsonschema`, `Masterminds/semver`.
+- Go and TypeScript: at most three nested blocks, no `else` or `else if`, early return, and
+  conditions, steps and types named for the domain (`runIsTerminal`, `tokenNeedsRemint`).
+  ESLint enforces this for TypeScript; `revive`, `nestif`, `gocognit` and review for Go.
 
 Layout (ADR 0007):
 
@@ -128,6 +131,11 @@ Layout (ADR 0007):
    imported outside `test/integration`, or a fake is not package `<pkg>test` in
    `<pkg>/<pkg>test/`. Review checks the rest: rule 5, and that `internal/` and `cmd/` never
    import `tools/` or `test/`.
+
+- The omp extension follows the same layout in `extension/src/`: `contract`, `integration`,
+  `support`, and the slices `relay` and `commands`, wired only in `extension/index.ts`. Unit
+  tests sit beside the code and are named `*.spec.ts`; fakes live in `extension/test/fakes/`.
+  These rules are checked in review, not by a test.
 
 ## Project conventions
 

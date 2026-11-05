@@ -83,13 +83,17 @@ func (v *Verifier) discover(ctx context.Context, done chan struct{}) {
 	provider, err := oidc.NewProvider(ctx, v.issuerURL)
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if err != nil {
-		v.failure, v.failedAt = fmt.Errorf("%w: %w", errIssuerUnavailable, err), v.clock.Now()
-	} else {
-		v.verifier = provider.Verifier(&oidc.Config{ClientID: v.audience, Now: v.clock.Now})
-	}
+	v.recordDiscovery(provider, err)
 	v.discovery = nil
 	close(done)
+}
+
+func (v *Verifier) recordDiscovery(provider *oidc.Provider, err error) {
+	if err != nil {
+		v.failure, v.failedAt = fmt.Errorf("%w: %w", errIssuerUnavailable, err), v.clock.Now()
+		return
+	}
+	v.verifier = provider.Verifier(&oidc.Config{ClientID: v.audience, Now: v.clock.Now})
 }
 
 func (v *Verifier) owner(ctx context.Context, raw string) (string, error) {

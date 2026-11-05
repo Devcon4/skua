@@ -297,313 +297,359 @@ func (e *runEnv) profilelessRun(t *testing.T, name string) *v1alpha1.AgentRun {
 func TestRunReconciler(t *testing.T) {
 	t.Parallel()
 
-	t.Run("warm adoption mints one key and records the adopted pod", func(t *testing.T) {
-		e, warmPool := runParallelEnv(t, "warm")
-		run, pod := e.runningRun(t, "warm-adopt", warmPool, "warm")
-		alias := "skua-" + string(run.UID)
+	t.Run("warm adoption mints one key and records the adopted pod", testRunWarmAdoption)
 
-		if !slices.Contains(run.Finalizers, oprun.Finalizer) {
-			t.Errorf("finalizers = %v, want %s", run.Finalizers, oprun.Finalizer)
-		}
-		if run.Status.PodName != pod.Name || run.Status.PodUID != pod.UID || run.Status.Claim != run.Name || run.Status.StartedAt == nil {
-			t.Errorf("status claim %q pod %q uid %q startedAt %v, want claim %q pod %q uid %q", run.Status.Claim, run.Status.PodName, run.Status.PodUID, run.Status.StartedAt, run.Name, pod.Name, pod.UID)
-		}
-		if run.Status.ProfileSnapshot == nil || run.Status.ProfileSnapshot.Image != "generic:dev" {
-			t.Errorf("profileSnapshot = %+v, want the profile spec", run.Status.ProfileSnapshot)
-		}
+	t.Run("cold claim turns Running after ColdDelay", testRunColdClaim)
 
-		var secret corev1.Secret
-		if err := e.c.Get(t.Context(), client.ObjectKey{Namespace: e.cfg.RunNamespace, Name: sandbox.SecretName("warm-adopt")}, &secret); err != nil {
-			t.Fatalf("get run secret: %v", err)
-		}
-		if !metav1.IsControlledBy(&secret, run) {
-			t.Errorf("secret owner references = %+v, want controlled by run %s", secret.OwnerReferences, run.UID)
-		}
-		if secret.Labels[sandbox.LabelRunSecret] != "true" || secret.Labels[sandbox.LabelRunName] != run.Name {
-			t.Errorf("secret labels = %v", secret.Labels)
-		}
-		value := string(secret.Data[sandbox.SecretKeyLiteLLM])
-		if !strings.HasPrefix(value, oprun.KeyValuePrefix) || len(value) != len(oprun.KeyValuePrefix)+32 {
-			t.Errorf("litellmKey has length %d or wrong prefix", len(value))
-		}
+	t.Run("mint failing twice then succeeding mints once", testRunMintRetry)
 
-		key, ok := e.gw.Keys()[alias]
-		switch {
-		case !ok:
-			t.Fatalf("no key with alias %s; keys %v", alias, e.gw.Keys())
-		case key.Value != value:
-			t.Error("minted key value differs from the Secret's litellmKey")
-		case key.MaxBudget != 10 || key.Duration != 4*time.Hour+5*time.Minute:
-			t.Errorf("key budget %v duration %s, want 10 and 4h5m", key.MaxBudget, key.Duration)
-		case len(key.Models) != 1 || key.Models[0] != runTestModel:
-			t.Errorf("key models = %v", key.Models)
-		}
-		wantMeta := map[string]string{"run": run.Name, "namespace": run.Namespace, "profile": "warm", "owner": runTestOwner}
-		if !apiequality.Semantic.DeepEqual(key.Metadata, wantMeta) {
-			t.Errorf("key metadata = %v, want %v", key.Metadata, wantMeta)
-		}
-		if n := len(e.calls(litellmtest.OpMint, alias)); n != 1 {
-			t.Errorf("mint calls = %d, want 1", n)
-		}
+	t.Run("alias conflict fails the run with GatewayError", testRunAliasConflict)
 
-		claim, ok := e.claim(t, run.Name)
-		if !ok {
-			t.Fatal("claim is missing")
-		}
-		if len(claim.OwnerReferences) != 0 {
-			t.Errorf("claim owner references = %+v, want none", claim.OwnerReferences)
-		}
-		wantSpec := extv1beta1.SandboxClaimSpec{WarmPoolRef: extv1beta1.SandboxWarmPoolRef{Name: warmPool.Name}}
-		if !apiequality.Semantic.DeepEqual(claim.Spec, wantSpec) {
-			t.Errorf("claim spec = %+v, want only warmPoolRef %s", claim.Spec, warmPool.Name)
-		}
-		if claim.Labels[sandbox.LabelRunName] != run.Name || claim.Labels[sandbox.LabelRunUID] != string(run.UID) || claim.Labels[sandbox.LabelProfile] != "warm" {
-			t.Errorf("claim labels = %v", claim.Labels)
-		}
-		if claim.Annotations[extv1beta1.AssignedSandboxNameAnnotation] != pod.Name {
-			t.Errorf("warm claim sandbox-name annotation = %q, want %q", claim.Annotations[extv1beta1.AssignedSandboxNameAnnotation], pod.Name)
-		}
+	t.Run("mint failing for 5 minutes fails the run with GatewayError", testRunMintDown)
 
-		e.poke(t, run.Name)
-		runConsistently(t, "no second mint", func() bool { return len(e.calls(litellmtest.OpMint, alias)) == 1 })
+	t.Run("missing profile fails the run with no claim and no mint", testRunMissingProfile)
+
+	t.Run("deleting the profile after the snapshot leaves the run untouched", testRunProfileDeletedAfterSnapshot)
+
+	t.Run("a Ready condition from an older profile generation does not admit", testRunStaleReadyGeneration)
+
+	t.Run("a Failed run revokes its key once and deletes its claim", testRunFailedRevokesOnce)
+
+	t.Run("a terminal run whose revoke fails still deletes its claim and sets finishedAt", testRunTerminalRevokeFails)
+
+	t.Run("deleting a run revokes, deletes the claim and releases the finalizer", testRunDeleteReleasesFinalizer)
+
+	t.Run("a revoke failing for 2 minutes still releases the finalizer", testRunRevokeDownReleasesFinalizer)
+
+	t.Run("a run fetched longer than afterFetch ago is deleted", testRunFetchedRetention)
+
+	t.Run("a terminal run without fetched-at is deleted after retention.max", testRunRetentionMax)
+}
+
+func testRunWarmAdoption(t *testing.T) {
+	e, warmPool := runParallelEnv(t, "warm")
+	run, pod := e.runningRun(t, "warm-adopt", warmPool, "warm")
+	alias := "skua-" + string(run.UID)
+
+	assertWarmRunStatus(t, run, pod)
+	value := e.requireRunSecret(t, run)
+	e.assertMintedKey(t, run, alias, value)
+	e.assertWarmClaim(t, run, pod, warmPool)
+
+	e.poke(t, run.Name)
+	runConsistently(t, "no second mint", func() bool { return len(e.calls(litellmtest.OpMint, alias)) == 1 })
+}
+
+func assertWarmRunStatus(t *testing.T, run *v1alpha1.AgentRun, pod corev1.Pod) {
+	t.Helper()
+	if !slices.Contains(run.Finalizers, oprun.Finalizer) {
+		t.Errorf("finalizers = %v, want %s", run.Finalizers, oprun.Finalizer)
+	}
+	if run.Status.PodName != pod.Name || run.Status.PodUID != pod.UID || run.Status.Claim != run.Name || run.Status.StartedAt == nil {
+		t.Errorf("status claim %q pod %q uid %q startedAt %v, want claim %q pod %q uid %q", run.Status.Claim, run.Status.PodName, run.Status.PodUID, run.Status.StartedAt, run.Name, pod.Name, pod.UID)
+	}
+	if run.Status.ProfileSnapshot == nil || run.Status.ProfileSnapshot.Image != "generic:dev" {
+		t.Errorf("profileSnapshot = %+v, want the profile spec", run.Status.ProfileSnapshot)
+	}
+}
+
+func (e *runEnv) requireRunSecret(t *testing.T, run *v1alpha1.AgentRun) string {
+	t.Helper()
+	var secret corev1.Secret
+	if err := e.c.Get(t.Context(), client.ObjectKey{Namespace: e.cfg.RunNamespace, Name: sandbox.SecretName(run.Name)}, &secret); err != nil {
+		t.Fatalf("get run secret: %v", err)
+	}
+	if !metav1.IsControlledBy(&secret, run) {
+		t.Errorf("secret owner references = %+v, want controlled by run %s", secret.OwnerReferences, run.UID)
+	}
+	if secret.Labels[sandbox.LabelRunSecret] != "true" || secret.Labels[sandbox.LabelRunName] != run.Name {
+		t.Errorf("secret labels = %v", secret.Labels)
+	}
+	value := string(secret.Data[sandbox.SecretKeyLiteLLM])
+	if !strings.HasPrefix(value, oprun.KeyValuePrefix) || len(value) != len(oprun.KeyValuePrefix)+32 {
+		t.Errorf("litellmKey has length %d or wrong prefix", len(value))
+	}
+	return value
+}
+
+func (e *runEnv) assertMintedKey(t *testing.T, run *v1alpha1.AgentRun, alias, value string) {
+	t.Helper()
+	key, ok := e.gw.Keys()[alias]
+	switch {
+	case !ok:
+		t.Fatalf("no key with alias %s; keys %v", alias, e.gw.Keys())
+	case key.Value != value:
+		t.Error("minted key value differs from the Secret's litellmKey")
+	case key.MaxBudget != 10 || key.Duration != 4*time.Hour+5*time.Minute:
+		t.Errorf("key budget %v duration %s, want 10 and 4h5m", key.MaxBudget, key.Duration)
+	case len(key.Models) != 1 || key.Models[0] != runTestModel:
+		t.Errorf("key models = %v", key.Models)
+	}
+	wantMeta := map[string]string{"run": run.Name, "namespace": run.Namespace, "profile": "warm", "owner": runTestOwner}
+	if !apiequality.Semantic.DeepEqual(key.Metadata, wantMeta) {
+		t.Errorf("key metadata = %v, want %v", key.Metadata, wantMeta)
+	}
+	if n := len(e.calls(litellmtest.OpMint, alias)); n != 1 {
+		t.Errorf("mint calls = %d, want 1", n)
+	}
+}
+
+func (e *runEnv) assertWarmClaim(t *testing.T, run *v1alpha1.AgentRun, pod corev1.Pod, warmPool client.ObjectKey) {
+	t.Helper()
+	claim, ok := e.claim(t, run.Name)
+	if !ok {
+		t.Fatal("claim is missing")
+	}
+	if len(claim.OwnerReferences) != 0 {
+		t.Errorf("claim owner references = %+v, want none", claim.OwnerReferences)
+	}
+	wantSpec := extv1beta1.SandboxClaimSpec{WarmPoolRef: extv1beta1.SandboxWarmPoolRef{Name: warmPool.Name}}
+	if !apiequality.Semantic.DeepEqual(claim.Spec, wantSpec) {
+		t.Errorf("claim spec = %+v, want only warmPoolRef %s", claim.Spec, warmPool.Name)
+	}
+	if claim.Labels[sandbox.LabelRunName] != run.Name || claim.Labels[sandbox.LabelRunUID] != string(run.UID) || claim.Labels[sandbox.LabelProfile] != "warm" {
+		t.Errorf("claim labels = %v", claim.Labels)
+	}
+	if claim.Annotations[extv1beta1.AssignedSandboxNameAnnotation] != pod.Name {
+		t.Errorf("warm claim sandbox-name annotation = %q, want %q", claim.Annotations[extv1beta1.AssignedSandboxNameAnnotation], pod.Name)
+	}
+}
+
+func testRunColdClaim(t *testing.T) {
+	e, _ := runParallelEnv(t, "cold")
+	run := e.createRun(t, "cold-start", "cold")
+	runEventually(t, runTestWait, "cold claim created", func() bool {
+		_, ok := e.claim(t, run.Name)
+		return ok
+	})
+	runEventually(t, runTestWait, "binder holding the cold claim", func() bool {
+		return e.binder.Waiting(client.ObjectKey{Namespace: e.cfg.SandboxNamespace, Name: run.Name})
+	})
+	claim, _ := e.claim(t, run.Name)
+	if claim.Status.SandboxStatus.Name != "" {
+		t.Fatalf("cold claim bound before ColdDelay to %q", claim.Status.SandboxStatus.Name)
+	}
+	if got, _ := e.getRun(t, run.Name); got.Status.Phase != v1alpha1.PhasePending {
+		t.Fatalf("phase before ColdDelay = %q, want Pending", got.Status.Phase)
+	}
+
+	e.clock.Step(runTestColdDelay)
+	got := e.waitRun(t, run.Name, "Running", func(r *v1alpha1.AgentRun) bool { return r.Status.Phase == v1alpha1.PhaseRunning })
+	if got.Status.PodName != run.Name {
+		t.Errorf("podName = %q, want the cold pod %q", got.Status.PodName, run.Name)
+	}
+	claim, _ = e.claim(t, run.Name)
+	if v, ok := claim.Annotations[extv1beta1.AssignedSandboxNameAnnotation]; ok {
+		t.Errorf("cold claim has sandbox-name annotation %q", v)
+	}
+}
+
+func testRunMintRetry(t *testing.T) {
+	e, pool := runParallelEnv(t, "mint-retry")
+	e.gw.FailNext(litellmtest.OpMint, &litellm.APIError{Status: http.StatusInternalServerError})
+	e.gw.FailNext(litellmtest.OpMint, &litellm.APIError{Status: http.StatusInternalServerError})
+	run, _ := e.runningRun(t, "mint-retry", pool, "mint-retry")
+	alias := "skua-" + string(run.UID)
+	calls := e.calls(litellmtest.OpMint, alias)
+	if len(calls) != 3 || calls[0].Err == nil || calls[1].Err == nil || calls[2].Err != nil {
+		t.Fatalf("mint calls = %+v, want two failures then one success", calls)
+	}
+	if _, ok := e.gw.Keys()[alias]; !ok {
+		t.Fatalf("no key with alias %s", alias)
+	}
+}
+
+func testRunAliasConflict(t *testing.T) {
+	e, _ := runParallelEnv(t, "alias-conflict")
+	e.gw.FailNext(litellmtest.OpMint, fmt.Errorf("%w: test", litellm.ErrAliasConflict))
+	e.createRun(t, "alias-conflict", "alias-conflict")
+	got := e.waitRun(t, "alias-conflict", "Failed/GatewayError", runIsFailed(v1alpha1.ReasonGatewayError))
+	if got.Status.FinishedAt == nil {
+		t.Error("finishedAt is unset")
+	}
+	if _, ok := e.claim(t, "alias-conflict"); ok {
+		t.Error("a claim exists for a run whose mint conflicted")
+	}
+}
+
+func testRunMintDown(t *testing.T) {
+	e, _ := runParallelEnv(t, "mint-down")
+	e.gw.Unavailable(true)
+	e.createRun(t, "mint-down", "mint-down")
+	e.waitRun(t, "mint-down", "KeyMinted=False", runConditionIs(oprun.ConditionKeyMinted, metav1.ConditionFalse))
+	e.clock.Step(4 * time.Minute)
+	e.poke(t, "mint-down")
+	runConsistently(t, "run stays Pending before 5 minutes", func() bool {
+		r, ok := e.getRun(t, "mint-down")
+		return ok && r.Status.Phase == v1alpha1.PhasePending
+	})
+	e.clock.Step(time.Minute)
+	e.poke(t, "mint-down")
+	e.waitRun(t, "mint-down", "Failed/GatewayError", runIsFailed(v1alpha1.ReasonGatewayError))
+	e.gw.Unavailable(false)
+	e.poke(t, "mint-down")
+	e.waitRun(t, "mint-down", "KeyRevoked=True", runConditionIs(oprun.ConditionKeyRevoked, metav1.ConditionTrue))
+	if _, ok := e.claim(t, "mint-down"); ok {
+		t.Error("a claim exists for a run that never minted")
+	}
+}
+
+func testRunMissingProfile(t *testing.T) {
+	t.Parallel()
+	e := runStartEnv(t, nil, oprun.Timing{})
+	got := e.profilelessRun(t, "no-profile")
+	if got.Status.ProfileSnapshot != nil {
+		t.Error("profileSnapshot set for a missing profile")
+	}
+	if n := len(e.calls(litellmtest.OpMint, "skua-"+string(got.UID))); n != 0 {
+		t.Errorf("mint calls = %d, want 0", n)
+	}
+	e.poke(t, got.Name)
+	runConsistently(t, "no claim", func() bool {
+		_, ok := e.claim(t, got.Name)
+		return !ok
+	})
+}
+
+func testRunProfileDeletedAfterSnapshot(t *testing.T) {
+	e, pool := runParallelEnv(t, "doomed")
+	run, _ := e.runningRun(t, "doomed-run", pool, "doomed")
+	if err := e.c.Delete(t.Context(), &v1alpha1.AgentProfile{ObjectMeta: metav1.ObjectMeta{Name: "doomed"}}); err != nil {
+		t.Fatalf("delete profile: %v", err)
+	}
+	e.poke(t, run.Name)
+	runConsistently(t, "run stays Running", func() bool {
+		r, ok := e.getRun(t, run.Name)
+		return ok && r.Status.Phase == v1alpha1.PhaseRunning && r.Status.Reason == ""
+	})
+}
+
+func testRunStaleReadyGeneration(t *testing.T) {
+	e, _ := runParallelEnv(t, "edited")
+	var p v1alpha1.AgentProfile
+	if err := e.c.Get(t.Context(), client.ObjectKey{Name: "edited"}, &p); err != nil {
+		t.Fatalf("get profile: %v", err)
+	}
+	p.Spec.Image = "generic:v2"
+	if err := e.c.Update(t.Context(), &p); err != nil {
+		t.Fatalf("edit profile: %v", err)
+	}
+	run := e.createRun(t, "stale-ready", "edited")
+	runConsistently(t, "run not admitted", func() bool {
+		r, ok := e.getRun(t, run.Name)
+		return ok && r.Status.ProfileSnapshot == nil && r.Status.Phase == ""
 	})
 
-	t.Run("cold claim turns Running after ColdDelay", func(t *testing.T) {
-		e, _ := runParallelEnv(t, "cold")
-		run := e.createRun(t, "cold-start", "cold")
-		runEventually(t, runTestWait, "cold claim created", func() bool {
-			_, ok := e.claim(t, run.Name)
-			return ok
-		})
-		runEventually(t, runTestWait, "binder holding the cold claim", func() bool {
-			return e.binder.Waiting(client.ObjectKey{Namespace: e.cfg.SandboxNamespace, Name: run.Name})
-		})
-		claim, _ := e.claim(t, run.Name)
-		if claim.Status.SandboxStatus.Name != "" {
-			t.Fatalf("cold claim bound before ColdDelay to %q", claim.Status.SandboxStatus.Name)
-		}
-		if got, _ := e.getRun(t, run.Name); got.Status.Phase != v1alpha1.PhasePending {
-			t.Fatalf("phase before ColdDelay = %q, want Pending", got.Status.Phase)
-		}
-
-		e.clock.Step(runTestColdDelay)
-		got := e.waitRun(t, run.Name, "Running", func(r *v1alpha1.AgentRun) bool { return r.Status.Phase == v1alpha1.PhaseRunning })
-		if got.Status.PodName != run.Name {
-			t.Errorf("podName = %q, want the cold pod %q", got.Status.PodName, run.Name)
-		}
-		claim, _ = e.claim(t, run.Name)
-		if v, ok := claim.Annotations[extv1beta1.AssignedSandboxNameAnnotation]; ok {
-			t.Errorf("cold claim has sandbox-name annotation %q", v)
-		}
+	meta.SetStatusCondition(&p.Status.Conditions, metav1.Condition{
+		Type: v1alpha1.ConditionReady, Status: metav1.ConditionTrue, Reason: v1alpha1.ReasonReady, ObservedGeneration: p.Generation,
 	})
+	if err := e.c.Status().Update(t.Context(), &p); err != nil {
+		t.Fatalf("mark profile Ready for generation %d: %v", p.Generation, err)
+	}
+	e.poke(t, run.Name)
+	got := e.waitRun(t, run.Name, "admitted", func(r *v1alpha1.AgentRun) bool { return r.Status.ProfileSnapshot != nil })
+	if got.Status.ProfileSnapshot.Image != "generic:v2" {
+		t.Errorf("snapshot image = %q, want generic:v2", got.Status.ProfileSnapshot.Image)
+	}
+}
 
-	t.Run("mint failing twice then succeeding mints once", func(t *testing.T) {
-		e, pool := runParallelEnv(t, "mint-retry")
-		e.gw.FailNext(litellmtest.OpMint, &litellm.APIError{Status: http.StatusInternalServerError})
-		e.gw.FailNext(litellmtest.OpMint, &litellm.APIError{Status: http.StatusInternalServerError})
-		run, _ := e.runningRun(t, "mint-retry", pool, "mint-retry")
-		alias := "skua-" + string(run.UID)
-		calls := e.calls(litellmtest.OpMint, alias)
-		if len(calls) != 3 || calls[0].Err == nil || calls[1].Err == nil || calls[2].Err != nil {
-			t.Fatalf("mint calls = %+v, want two failures then one success", calls)
-		}
-		if _, ok := e.gw.Keys()[alias]; !ok {
-			t.Fatalf("no key with alias %s", alias)
-		}
+func testRunFailedRevokesOnce(t *testing.T) {
+	e, pool := runParallelEnv(t, "cancelled")
+	run, _ := e.runningRun(t, "cancelled", pool, "cancelled")
+	alias := "skua-" + string(run.UID)
+	e.markFailed(t, run.Name, v1alpha1.ReasonCancelled)
+	e.waitRun(t, run.Name, "KeyRevoked=True with finishedAt", func(r *v1alpha1.AgentRun) bool {
+		return runConditionIs(oprun.ConditionKeyRevoked, metav1.ConditionTrue)(r) && r.Status.FinishedAt != nil
 	})
+	e.waitClaimGone(t, run.Name)
+	if !e.gw.Keys()[alias].Revoked {
+		t.Errorf("key %s is not revoked", alias)
+	}
+	e.poke(t, run.Name)
+	runConsistently(t, "one revoke", func() bool { return len(e.calls(litellmtest.OpRevoke, alias)) == 1 })
+	if got, _ := e.getRun(t, run.Name); got.Status.Reason != v1alpha1.ReasonCancelled {
+		t.Errorf("reason = %q, want %s", got.Status.Reason, v1alpha1.ReasonCancelled)
+	}
+}
 
-	t.Run("alias conflict fails the run with GatewayError", func(t *testing.T) {
-		e, _ := runParallelEnv(t, "alias-conflict")
-		e.gw.FailNext(litellmtest.OpMint, fmt.Errorf("%w: test", litellm.ErrAliasConflict))
-		e.createRun(t, "alias-conflict", "alias-conflict")
-		got := e.waitRun(t, "alias-conflict", "Failed/GatewayError", runIsFailed(v1alpha1.ReasonGatewayError))
-		if got.Status.FinishedAt == nil {
-			t.Error("finishedAt is unset")
-		}
-		if _, ok := e.claim(t, "alias-conflict"); ok {
-			t.Error("a claim exists for a run whose mint conflicted")
-		}
+func testRunTerminalRevokeFails(t *testing.T) {
+	e, pool := runParallelEnv(t, "revoke-fails")
+	run, _ := e.runningRun(t, "revoke-fails-terminal", pool, "revoke-fails")
+	e.gw.Unavailable(true)
+	t.Cleanup(func() { e.gw.Unavailable(false) })
+	e.markFailed(t, run.Name, v1alpha1.ReasonCancelled)
+	e.waitRun(t, run.Name, "KeyRevoked=False with finishedAt", func(r *v1alpha1.AgentRun) bool {
+		return runConditionIs(oprun.ConditionKeyRevoked, metav1.ConditionFalse)(r) && r.Status.FinishedAt != nil
 	})
+	e.waitClaimGone(t, run.Name)
+	e.gw.Unavailable(false)
+	e.poke(t, run.Name)
+	e.waitRun(t, run.Name, "KeyRevoked=True", runConditionIs(oprun.ConditionKeyRevoked, metav1.ConditionTrue))
+}
 
-	t.Run("mint failing for 5 minutes fails the run with GatewayError", func(t *testing.T) {
-		e, _ := runParallelEnv(t, "mint-down")
-		e.gw.Unavailable(true)
-		e.createRun(t, "mint-down", "mint-down")
-		e.waitRun(t, "mint-down", "KeyMinted=False", runConditionIs(oprun.ConditionKeyMinted, metav1.ConditionFalse))
-		e.clock.Step(4 * time.Minute)
-		e.poke(t, "mint-down")
-		runConsistently(t, "run stays Pending before 5 minutes", func() bool {
-			r, ok := e.getRun(t, "mint-down")
-			return ok && r.Status.Phase == v1alpha1.PhasePending
-		})
-		e.clock.Step(time.Minute)
-		e.poke(t, "mint-down")
-		e.waitRun(t, "mint-down", "Failed/GatewayError", runIsFailed(v1alpha1.ReasonGatewayError))
-		e.gw.Unavailable(false)
-		e.poke(t, "mint-down")
-		e.waitRun(t, "mint-down", "KeyRevoked=True", runConditionIs(oprun.ConditionKeyRevoked, metav1.ConditionTrue))
-		if _, ok := e.claim(t, "mint-down"); ok {
-			t.Error("a claim exists for a run that never minted")
-		}
+func testRunDeleteReleasesFinalizer(t *testing.T) {
+	e, pool := runParallelEnv(t, "deleted")
+	run, _ := e.runningRun(t, "deleted", pool, "deleted")
+	alias := "skua-" + string(run.UID)
+	if err := e.c.Delete(t.Context(), run); err != nil {
+		t.Fatalf("delete run: %v", err)
+	}
+	e.waitRunGone(t, run.Name)
+	e.waitClaimGone(t, run.Name)
+	if e.succeeded(litellmtest.OpRevoke, alias) != 1 || !e.gw.Keys()[alias].Revoked {
+		t.Errorf("revoke calls = %+v, want one success", e.calls(litellmtest.OpRevoke, alias))
+	}
+}
+
+func testRunRevokeDownReleasesFinalizer(t *testing.T) {
+	e, pool := runParallelEnv(t, "revoke-down")
+	run, _ := e.runningRun(t, "revoke-down", pool, "revoke-down")
+	e.gw.Unavailable(true)
+	t.Cleanup(func() { e.gw.Unavailable(false) })
+	if err := e.c.Delete(t.Context(), run); err != nil {
+		t.Fatalf("delete run: %v", err)
+	}
+	e.waitRun(t, run.Name, "KeyRevoked=False", runConditionIs(oprun.ConditionKeyRevoked, metav1.ConditionFalse))
+	e.clock.Step(time.Minute)
+	e.poke(t, run.Name)
+	runConsistently(t, "finalizer held before 2 minutes", func() bool {
+		_, ok := e.getRun(t, run.Name)
+		return ok
 	})
+	e.clock.Step(time.Minute)
+	e.poke(t, run.Name)
+	e.waitRunGone(t, run.Name)
+	e.waitClaimGone(t, run.Name)
+}
 
-	t.Run("missing profile fails the run with no claim and no mint", func(t *testing.T) {
-		t.Parallel()
-		e := runStartEnv(t, nil, oprun.Timing{})
-		got := e.profilelessRun(t, "no-profile")
-		if got.Status.ProfileSnapshot != nil {
-			t.Error("profileSnapshot set for a missing profile")
-		}
-		if n := len(e.calls(litellmtest.OpMint, "skua-"+string(got.UID))); n != 0 {
-			t.Errorf("mint calls = %d, want 0", n)
-		}
-		e.poke(t, got.Name)
-		runConsistently(t, "no claim", func() bool {
-			_, ok := e.claim(t, got.Name)
-			return !ok
-		})
+func testRunFetchedRetention(t *testing.T) {
+	t.Parallel()
+	e := runStartEnv(t, nil, oprun.Timing{})
+	run := e.profilelessRun(t, "fetched")
+	fetched := e.clock.Now().Add(-e.cfg.Retention.AfterFetch.Duration + time.Hour).Format(time.RFC3339)
+	e.annotateFetched(t, run.Name, fetched)
+	runConsistently(t, "run kept inside afterFetch", func() bool {
+		_, ok := e.getRun(t, run.Name)
+		return ok
 	})
+	fetched = e.clock.Now().Add(-e.cfg.Retention.AfterFetch.Duration - time.Minute).Format(time.RFC3339)
+	e.annotateFetched(t, run.Name, fetched)
+	e.waitRunGone(t, run.Name)
+}
 
-	t.Run("deleting the profile after the snapshot leaves the run untouched", func(t *testing.T) {
-		e, pool := runParallelEnv(t, "doomed")
-		run, _ := e.runningRun(t, "doomed-run", pool, "doomed")
-		if err := e.c.Delete(t.Context(), &v1alpha1.AgentProfile{ObjectMeta: metav1.ObjectMeta{Name: "doomed"}}); err != nil {
-			t.Fatalf("delete profile: %v", err)
-		}
-		e.poke(t, run.Name)
-		runConsistently(t, "run stays Running", func() bool {
-			r, ok := e.getRun(t, run.Name)
-			return ok && r.Status.Phase == v1alpha1.PhaseRunning && r.Status.Reason == ""
-		})
+func testRunRetentionMax(t *testing.T) {
+	t.Parallel()
+	e := runStartEnv(t, nil, oprun.Timing{})
+	got := e.profilelessRun(t, "no-profile")
+	e.clock.SetTime(got.Status.FinishedAt.Add(e.cfg.Retention.Max.Duration - time.Minute))
+	e.poke(t, "no-profile")
+	runConsistently(t, "run kept inside retention.max", func() bool {
+		_, ok := e.getRun(t, "no-profile")
+		return ok
 	})
-
-	t.Run("a Ready condition from an older profile generation does not admit", func(t *testing.T) {
-		e, _ := runParallelEnv(t, "edited")
-		var p v1alpha1.AgentProfile
-		if err := e.c.Get(t.Context(), client.ObjectKey{Name: "edited"}, &p); err != nil {
-			t.Fatalf("get profile: %v", err)
-		}
-		p.Spec.Image = "generic:v2"
-		if err := e.c.Update(t.Context(), &p); err != nil {
-			t.Fatalf("edit profile: %v", err)
-		}
-		run := e.createRun(t, "stale-ready", "edited")
-		runConsistently(t, "run not admitted", func() bool {
-			r, ok := e.getRun(t, run.Name)
-			return ok && r.Status.ProfileSnapshot == nil && r.Status.Phase == ""
-		})
-
-		meta.SetStatusCondition(&p.Status.Conditions, metav1.Condition{
-			Type: v1alpha1.ConditionReady, Status: metav1.ConditionTrue, Reason: v1alpha1.ReasonReady, ObservedGeneration: p.Generation,
-		})
-		if err := e.c.Status().Update(t.Context(), &p); err != nil {
-			t.Fatalf("mark profile Ready for generation %d: %v", p.Generation, err)
-		}
-		e.poke(t, run.Name)
-		got := e.waitRun(t, run.Name, "admitted", func(r *v1alpha1.AgentRun) bool { return r.Status.ProfileSnapshot != nil })
-		if got.Status.ProfileSnapshot.Image != "generic:v2" {
-			t.Errorf("snapshot image = %q, want generic:v2", got.Status.ProfileSnapshot.Image)
-		}
-	})
-
-	t.Run("a Failed run revokes its key once and deletes its claim", func(t *testing.T) {
-		e, pool := runParallelEnv(t, "cancelled")
-		run, _ := e.runningRun(t, "cancelled", pool, "cancelled")
-		alias := "skua-" + string(run.UID)
-		e.markFailed(t, run.Name, v1alpha1.ReasonCancelled)
-		e.waitRun(t, run.Name, "KeyRevoked=True with finishedAt", func(r *v1alpha1.AgentRun) bool {
-			return runConditionIs(oprun.ConditionKeyRevoked, metav1.ConditionTrue)(r) && r.Status.FinishedAt != nil
-		})
-		e.waitClaimGone(t, run.Name)
-		if !e.gw.Keys()[alias].Revoked {
-			t.Errorf("key %s is not revoked", alias)
-		}
-		e.poke(t, run.Name)
-		runConsistently(t, "one revoke", func() bool { return len(e.calls(litellmtest.OpRevoke, alias)) == 1 })
-		if got, _ := e.getRun(t, run.Name); got.Status.Reason != v1alpha1.ReasonCancelled {
-			t.Errorf("reason = %q, want %s", got.Status.Reason, v1alpha1.ReasonCancelled)
-		}
-	})
-
-	t.Run("a terminal run whose revoke fails still deletes its claim and sets finishedAt", func(t *testing.T) {
-		e, pool := runParallelEnv(t, "revoke-fails")
-		run, _ := e.runningRun(t, "revoke-fails-terminal", pool, "revoke-fails")
-		e.gw.Unavailable(true)
-		t.Cleanup(func() { e.gw.Unavailable(false) })
-		e.markFailed(t, run.Name, v1alpha1.ReasonCancelled)
-		e.waitRun(t, run.Name, "KeyRevoked=False with finishedAt", func(r *v1alpha1.AgentRun) bool {
-			return runConditionIs(oprun.ConditionKeyRevoked, metav1.ConditionFalse)(r) && r.Status.FinishedAt != nil
-		})
-		e.waitClaimGone(t, run.Name)
-		e.gw.Unavailable(false)
-		e.poke(t, run.Name)
-		e.waitRun(t, run.Name, "KeyRevoked=True", runConditionIs(oprun.ConditionKeyRevoked, metav1.ConditionTrue))
-	})
-
-	t.Run("deleting a run revokes, deletes the claim and releases the finalizer", func(t *testing.T) {
-		e, pool := runParallelEnv(t, "deleted")
-		run, _ := e.runningRun(t, "deleted", pool, "deleted")
-		alias := "skua-" + string(run.UID)
-		if err := e.c.Delete(t.Context(), run); err != nil {
-			t.Fatalf("delete run: %v", err)
-		}
-		e.waitRunGone(t, run.Name)
-		e.waitClaimGone(t, run.Name)
-		if e.succeeded(litellmtest.OpRevoke, alias) != 1 || !e.gw.Keys()[alias].Revoked {
-			t.Errorf("revoke calls = %+v, want one success", e.calls(litellmtest.OpRevoke, alias))
-		}
-	})
-
-	t.Run("a revoke failing for 2 minutes still releases the finalizer", func(t *testing.T) {
-		e, pool := runParallelEnv(t, "revoke-down")
-		run, _ := e.runningRun(t, "revoke-down", pool, "revoke-down")
-		e.gw.Unavailable(true)
-		t.Cleanup(func() { e.gw.Unavailable(false) })
-		if err := e.c.Delete(t.Context(), run); err != nil {
-			t.Fatalf("delete run: %v", err)
-		}
-		e.waitRun(t, run.Name, "KeyRevoked=False", runConditionIs(oprun.ConditionKeyRevoked, metav1.ConditionFalse))
-		e.clock.Step(time.Minute)
-		e.poke(t, run.Name)
-		runConsistently(t, "finalizer held before 2 minutes", func() bool {
-			_, ok := e.getRun(t, run.Name)
-			return ok
-		})
-		e.clock.Step(time.Minute)
-		e.poke(t, run.Name)
-		e.waitRunGone(t, run.Name)
-		e.waitClaimGone(t, run.Name)
-	})
-
-	t.Run("a run fetched longer than afterFetch ago is deleted", func(t *testing.T) {
-		t.Parallel()
-		e := runStartEnv(t, nil, oprun.Timing{})
-		run := e.profilelessRun(t, "fetched")
-		fetched := e.clock.Now().Add(-e.cfg.Retention.AfterFetch.Duration + time.Hour).Format(time.RFC3339)
-		e.annotateFetched(t, run.Name, fetched)
-		runConsistently(t, "run kept inside afterFetch", func() bool {
-			_, ok := e.getRun(t, run.Name)
-			return ok
-		})
-		fetched = e.clock.Now().Add(-e.cfg.Retention.AfterFetch.Duration - time.Minute).Format(time.RFC3339)
-		e.annotateFetched(t, run.Name, fetched)
-		e.waitRunGone(t, run.Name)
-	})
-
-	t.Run("a terminal run without fetched-at is deleted after retention.max", func(t *testing.T) {
-		t.Parallel()
-		e := runStartEnv(t, nil, oprun.Timing{})
-		got := e.profilelessRun(t, "no-profile")
-		e.clock.SetTime(got.Status.FinishedAt.Add(e.cfg.Retention.Max.Duration - time.Minute))
-		e.poke(t, "no-profile")
-		runConsistently(t, "run kept inside retention.max", func() bool {
-			_, ok := e.getRun(t, "no-profile")
-			return ok
-		})
-		e.clock.Step(time.Minute)
-		e.poke(t, "no-profile")
-		e.waitRunGone(t, "no-profile")
-	})
+	e.clock.Step(time.Minute)
+	e.poke(t, "no-profile")
+	e.waitRunGone(t, "no-profile")
 }
 
 func (e *runEnv) annotateFetched(t *testing.T, name, fetchedAt string) {

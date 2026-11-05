@@ -78,11 +78,11 @@ func mustRun(t *testing.T, stdin []byte, name string, args ...string) []byte {
 
 func check(t *testing.T, desc string, ok bool) {
 	t.Helper()
-	if ok {
-		t.Logf("PASS %s", desc)
-	} else {
+	if !ok {
 		t.Errorf("FAIL %s", desc)
+		return
 	}
+	t.Logf("PASS %s", desc)
 }
 
 func readTestdata(t *testing.T, name string) []byte {

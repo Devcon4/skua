@@ -54,4 +54,4 @@ release. The extension warns at startup when omp is outside the tested range.
 
 ## More Information
 Revisit if omp gains external agents or remote task executors.
-Usage: `extension/README.md`. Code: `extension/src/relay.ts`, `extension/test/rpc/`.
+Usage: `extension/README.md`. Code: `extension/src/relay/provider.ts`, `extension/test/rpc/`.

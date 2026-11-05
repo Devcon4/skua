@@ -1,7 +1,28 @@
 version: "2"
 
+run:
+  build-tags:
+    - e2e
+    - install
+
 linters:
   enable:
     - errorlint
+    - gocognit
     - misspell
+    - nestif
+    - revive
     - unconvert
+  settings:
+    gocognit:
+      min-complexity: 20
+    nestif:
+      min-complexity: 4
+    revive:
+      rules:
+        - name: max-control-nesting
+          arguments: [3]
+        - name: early-return
+        - name: indent-error-flow
+        - name: superfluous-else
+        - name: unnecessary-stmt

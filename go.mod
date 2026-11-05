@@ -111,3 +111,5 @@ tool (
 	github.com/rhysd/actionlint/cmd/actionlint
 	sigs.k8s.io/controller-runtime/tools/setup-envtest
 )
+
+ignore ./extension

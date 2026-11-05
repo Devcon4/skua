@@ -31,18 +31,21 @@ func (sw *streamWriter) send(event string, data any) {
 		sw.w.WriteHeader(http.StatusOK)
 		sw.ready = true
 	}
-	var payload []byte
-	if s, ok := data.(string); ok {
-		payload = []byte(s)
-	} else {
-		payload, _ = json.Marshal(data)
-	}
+	payload := ssePayload(data)
 	if event != "" {
 		_, _ = fmt.Fprintf(sw.w, "event: %s\n", event)
 	}
 	_, _ = fmt.Fprintf(sw.w, "data: %s\n\n", payload)
 	_ = sw.rc.Flush()
 	sw.sent++
+}
+
+func ssePayload(data any) []byte {
+	if s, ok := data.(string); ok {
+		return []byte(s)
+	}
+	payload, _ := json.Marshal(data)
+	return payload
 }
 
 func finishReason(api string, rp reply) string {

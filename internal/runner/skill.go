@@ -36,17 +36,21 @@ func skillText(run string, maxResultBytes int, git bool) string {
 	b.WriteString("description: How to deliver this skua run: the branch to work on, pushing, the pull request, the result size cap and submit_result.\n")
 	b.WriteString("---\n\n")
 	fmt.Fprintf(&b, "# skua run %s\n\n", run)
-	if git {
-		fmt.Fprintf(&b, "- Work on branch `%s`; it is checked out in this repository.\n", branch)
-		fmt.Fprintf(&b, "- Push with `git push origin HEAD:%s`. Pushes to any other branch are refused.\n", branch)
-		fmt.Fprintf(&b, "- Open the pull request with `gh pr create --head %s`.\n", branch)
-		fmt.Fprintf(&b, "- The result may be at most %d bytes. Keep larger output in git on `%s` and name its path in the result.\n", maxResultBytes, branch)
-	} else {
-		b.WriteString("- This run has no repository; this directory is scratch space.\n")
-		fmt.Fprintf(&b, "- The result may be at most %d bytes.\n", maxResultBytes)
-	}
+	writeDeliveryRules(&b, branch, maxResultBytes, git)
 	b.WriteString("- Finish by calling the `submit_result` tool with the result.\n")
 	return b.String()
+}
+
+func writeDeliveryRules(b *strings.Builder, branch string, maxResultBytes int, git bool) {
+	if !git {
+		b.WriteString("- This run has no repository; this directory is scratch space.\n")
+		fmt.Fprintf(b, "- The result may be at most %d bytes.\n", maxResultBytes)
+		return
+	}
+	fmt.Fprintf(b, "- Work on branch `%s`; it is checked out in this repository.\n", branch)
+	fmt.Fprintf(b, "- Push with `git push origin HEAD:%s`. Pushes to any other branch are refused.\n", branch)
+	fmt.Fprintf(b, "- Open the pull request with `gh pr create --head %s`.\n", branch)
+	fmt.Fprintf(b, "- The result may be at most %d bytes. Keep larger output in git on `%s` and name its path in the result.\n", maxResultBytes, branch)
 }
 
 func excludeFromGit(repo, pattern string) error {

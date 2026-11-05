@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/renameio/v2"
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/Devcon4/skua/internal/contract/wire"
 )
@@ -168,31 +169,37 @@ func (c *Client) sendLoop(ctx context.Context) {
 		case <-tick.C:
 		case <-c.wake:
 		}
-		for {
-			run, evs := c.nextBatch()
-			if evs == nil {
-				break
-			}
-			ack, err := c.postEvents(ctx, run, evs)
-			if err == nil && !c.applyAck(run, ack) {
-				err = fmt.Errorf("apiclient: ack %d is below seq %d", ack, evs[0].Seq)
-			}
-			if err == nil {
-				backoff = c.opt.retryBackoff()
-				continue
-			}
-			if permanentRefusal(err) {
-				c.opt.log.Error("skua-api refused runner events, dropping them", "run", run, "fromSeq", evs[0].Seq, "toSeq", evs[len(evs)-1].Seq, "err", err)
-				c.applyAck(run, evs[len(evs)-1].Seq)
-				continue
-			}
-			if ctx.Err() != nil {
-				return
-			}
-			c.opt.log.Warn("runner events not acked, retrying", "run", run, "fromSeq", evs[0].Seq, "err", err)
-			if !sleep(ctx, backoff.Step()) {
-				return
-			}
+		if !c.flushPending(ctx, &backoff) {
+			return
+		}
+	}
+}
+
+func (c *Client) flushPending(ctx context.Context, backoff *wait.Backoff) (ctxAlive bool) {
+	for {
+		run, evs := c.nextBatch()
+		if evs == nil {
+			return true
+		}
+		ack, err := c.postEvents(ctx, run, evs)
+		if err == nil && !c.applyAck(run, ack) {
+			err = fmt.Errorf("apiclient: ack %d is below seq %d", ack, evs[0].Seq)
+		}
+		if err == nil {
+			*backoff = c.opt.retryBackoff()
+			continue
+		}
+		if permanentRefusal(err) {
+			c.opt.log.Error("skua-api refused runner events, dropping them", "run", run, "fromSeq", evs[0].Seq, "toSeq", evs[len(evs)-1].Seq, "err", err)
+			c.applyAck(run, evs[len(evs)-1].Seq)
+			continue
+		}
+		if ctx.Err() != nil {
+			return false
+		}
+		c.opt.log.Warn("runner events not acked, retrying", "run", run, "fromSeq", evs[0].Seq, "err", err)
+		if !sleep(ctx, backoff.Step()) {
+			return false
 		}
 	}
 }

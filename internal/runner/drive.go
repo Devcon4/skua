@@ -26,16 +26,15 @@ func (r *runner) drive(ctx, dctx context.Context, resume bool) {
 	a := *r.st.Assign
 	pending := r.st.Result
 	r.mu.Unlock()
-	var res wire.RunnerResult
 	if pending != nil {
-		res = *pending
-	} else {
-		var ok bool
-		if res, ok = r.execute(ctx, dctx, a, resume); !ok {
-			return
-		}
-		res.Outputs = r.outputs(ctx, a)
+		r.finish(ctx, *pending)
+		return
 	}
+	res, ok := r.execute(ctx, dctx, a, resume)
+	if !ok {
+		return
+	}
+	res.Outputs = r.outputs(ctx, a)
 	r.finish(ctx, res)
 }
 

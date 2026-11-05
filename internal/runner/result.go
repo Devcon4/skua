@@ -13,46 +13,78 @@ import (
 
 const invalidResultPrompt = "You have not called submit_result with a valid result. Call it now."
 
+type resultConclusion struct {
+	r           *runner
+	dctx        context.Context
+	a           wire.Assign
+	exited      <-chan error
+	schemaAsked bool
+	sizeAsked   bool
+}
+
 // conclude turns the settled conversation into a result, re-prompting once for a missing schema result and
 // once for an oversize result in a forge workspace.
 func (r *runner) conclude(dctx context.Context, a wire.Assign, exited <-chan error) outcome {
-	hasSchema := len(a.Task.Schema) > 0
-	canCommit := a.Workspace != nil && a.Forge != nil
-	schemaAsked, sizeAsked := false, false
+	c := &resultConclusion{r: r, dctx: dctx, a: a, exited: exited}
 	for {
-		val, submitted := r.submission()
-		if !submitted && hasSchema {
-			if schemaAsked {
-				return done(failed(a.Run, v1alpha1.ReasonResultInvalid))
-			}
-			schemaAsked = true
-			if out, ok := r.turn(dctx, a.Run, invalidResultPrompt, exited); !ok {
-				return out
-			}
-			continue
+		if out, settled := c.next(); settled {
+			return out
 		}
-		if !submitted {
-			text, err := r.ad.LastText(dctx)
-			if err != nil {
-				return r.agentFailure(dctx, a.Run, err, exited)
-			}
-			if val, err = json.Marshal(text); err != nil {
-				return done(failed(a.Run, v1alpha1.ReasonAgentError))
-			}
-		}
-		if len(val) > r.s.maxResultBytes {
-			if !canCommit || sizeAsked {
-				return done(failed(a.Run, v1alpha1.ReasonResultTooLarge))
-			}
-			sizeAsked = true
-			r.update(func(st *state) { st.Submission = nil })
-			if out, ok := r.turn(dctx, a.Run, oversizePrompt(a.Run, len(val), r.s.maxResultBytes), exited); !ok {
-				return out
-			}
-			continue
-		}
-		return done(wire.RunnerResult{Run: a.Run, Phase: string(v1alpha1.PhaseSucceeded), Reason: v1alpha1.ReasonCompleted, Result: val})
 	}
+}
+
+func (c *resultConclusion) next() (out outcome, settled bool) {
+	val, submitted := c.r.submission()
+	schemaResultMissing := !submitted && len(c.a.Task.Schema) > 0
+	if schemaResultMissing {
+		return c.repromptForSchema()
+	}
+	if !submitted {
+		text, out, ok := c.lastTextResult()
+		if !ok {
+			return out, true
+		}
+		val = text
+	}
+	if len(val) > c.r.s.maxResultBytes {
+		return c.repromptForSize(len(val))
+	}
+	return done(wire.RunnerResult{Run: c.a.Run, Phase: string(v1alpha1.PhaseSucceeded), Reason: v1alpha1.ReasonCompleted, Result: val}), true
+}
+
+func (c *resultConclusion) repromptForSchema() (outcome, bool) {
+	if c.schemaAsked {
+		return done(failed(c.a.Run, v1alpha1.ReasonResultInvalid)), true
+	}
+	c.schemaAsked = true
+	return c.reprompt(invalidResultPrompt)
+}
+
+func (c *resultConclusion) repromptForSize(size int) (outcome, bool) {
+	canCommit := c.a.Workspace != nil && c.a.Forge != nil
+	if !canCommit || c.sizeAsked {
+		return done(failed(c.a.Run, v1alpha1.ReasonResultTooLarge)), true
+	}
+	c.sizeAsked = true
+	c.r.update(func(st *state) { st.Submission = nil })
+	return c.reprompt(oversizePrompt(c.a.Run, size, c.r.s.maxResultBytes))
+}
+
+func (c *resultConclusion) reprompt(prompt string) (outcome, bool) {
+	out, ok := c.r.turn(c.dctx, c.a.Run, prompt, c.exited)
+	return out, !ok
+}
+
+func (c *resultConclusion) lastTextResult() (json.RawMessage, outcome, bool) {
+	text, err := c.r.ad.LastText(c.dctx)
+	if err != nil {
+		return nil, c.r.agentFailure(c.dctx, c.a.Run, err, c.exited), false
+	}
+	val, err := json.Marshal(text)
+	if err != nil {
+		return nil, done(failed(c.a.Run, v1alpha1.ReasonAgentError)), false
+	}
+	return val, outcome{}, true
 }
 
 func oversizePrompt(run string, size, limit int) string {

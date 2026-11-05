@@ -230,47 +230,53 @@ func TestOperatorKeyNamespaceGrantsOnlyOperatorGet(t *testing.T) {
 		if _, ok := objs.find("Namespace", "", operatorKeyNS); !ok {
 			t.Errorf("%s: Namespace %s missing", dir, operatorKeyNS)
 		}
-		roles := map[string]bool{}
-		for _, u := range objs.ofKind("Role") {
-			role := convert[rbacv1.Role](t, u)
-			if role.Namespace != operatorKeyNS {
-				continue
-			}
-			roles[role.Name] = true
-			for _, r := range role.Rules {
-				if !grantsSecrets(r) || !slices.Equal(r.ResourceNames, []string{operatorKeySecret}) || !slices.Equal(r.Verbs, []string{"get"}) {
-					t.Errorf("%s: Role %s/%s rule %+v, want only get on Secret %s", dir, operatorKeyNS, role.Name, r, operatorKeySecret)
-				}
+		roles := checkOperatorKeyRoles(t, dir, objs)
+		checkOperatorKeyRoleBindings(t, dir, objs, roles)
+	}
+}
+
+func checkOperatorKeyRoles(t *testing.T, dir string, objs manifestSet) map[string]bool {
+	t.Helper()
+	roles := map[string]bool{}
+	for _, u := range objs.ofKind("Role") {
+		role := convert[rbacv1.Role](t, u)
+		if role.Namespace != operatorKeyNS {
+			continue
+		}
+		roles[role.Name] = true
+		for _, r := range role.Rules {
+			if !grantsSecrets(r) || !slices.Equal(r.ResourceNames, []string{operatorKeySecret}) || !slices.Equal(r.Verbs, []string{"get"}) {
+				t.Errorf("%s: Role %s/%s rule %+v, want only get on Secret %s", dir, operatorKeyNS, role.Name, r, operatorKeySecret)
 			}
 		}
-		operatorBound := false
-		for _, u := range objs.ofKind("RoleBinding") {
-			rb := convert[rbacv1.RoleBinding](t, u)
-			if rb.Namespace != operatorKeyNS {
-				continue
-			}
-			if bindsControlPlane(rb.Subjects, apiAccount) {
-				t.Errorf("%s: RoleBinding %s/%s binds %s", dir, operatorKeyNS, rb.Name, apiAccount)
-			}
-			if rb.RoleRef.Kind != "Role" || !roles[rb.RoleRef.Name] {
-				t.Errorf("%s: RoleBinding %s/%s refers to %s %s, want a Role in %s", dir, operatorKeyNS, rb.Name, rb.RoleRef.Kind, rb.RoleRef.Name, operatorKeyNS)
-			}
-			operatorBound = operatorBound || bindsControlPlane(rb.Subjects, operatorAccount)
+	}
+	return roles
+}
+
+func checkOperatorKeyRoleBindings(t *testing.T, dir string, objs manifestSet, roles map[string]bool) {
+	t.Helper()
+	operatorBound := false
+	for _, u := range objs.ofKind("RoleBinding") {
+		rb := convert[rbacv1.RoleBinding](t, u)
+		if rb.Namespace != operatorKeyNS {
+			continue
 		}
-		if !operatorBound {
-			t.Errorf("%s: no RoleBinding in %s binds %s", dir, operatorKeyNS, operatorAccount)
+		if bindsControlPlane(rb.Subjects, apiAccount) {
+			t.Errorf("%s: RoleBinding %s/%s binds %s", dir, operatorKeyNS, rb.Name, apiAccount)
 		}
+		if rb.RoleRef.Kind != "Role" || !roles[rb.RoleRef.Name] {
+			t.Errorf("%s: RoleBinding %s/%s refers to %s %s, want a Role in %s", dir, operatorKeyNS, rb.Name, rb.RoleRef.Kind, rb.RoleRef.Name, operatorKeyNS)
+		}
+		operatorBound = operatorBound || bindsControlPlane(rb.Subjects, operatorAccount)
+	}
+	if !operatorBound {
+		t.Errorf("%s: no RoleBinding in %s binds %s", dir, operatorKeyNS, operatorAccount)
 	}
 }
 
 func TestRunnerHasNoRoleBinding(t *testing.T) {
 	for dir, objs := range bothManifests(t) {
-		u, ok := objs.find("ServiceAccount", sandboxNS, runnerAccount)
-		if !ok {
-			t.Errorf("%s: ServiceAccount %s/%s missing", dir, sandboxNS, runnerAccount)
-		} else if sa := convert[corev1.ServiceAccount](t, u); sa.AutomountServiceAccountToken == nil || *sa.AutomountServiceAccountToken {
-			t.Errorf("%s: ServiceAccount %s automountServiceAccountToken = %v, want false", dir, runnerAccount, sa.AutomountServiceAccountToken)
-		}
+		checkRunnerTokenNotMounted(t, dir, objs)
 		for _, u := range objs.ofKind("RoleBinding") {
 			if rb := convert[rbacv1.RoleBinding](t, u); bindsRunner(rb.Subjects) {
 				t.Errorf("%s: RoleBinding %s/%s binds %s", dir, rb.Namespace, rb.Name, runnerAccount)
@@ -281,6 +287,18 @@ func TestRunnerHasNoRoleBinding(t *testing.T) {
 				t.Errorf("%s: ClusterRoleBinding %s binds %s", dir, crb.Name, runnerAccount)
 			}
 		}
+	}
+}
+
+func checkRunnerTokenNotMounted(t *testing.T, dir string, objs manifestSet) {
+	t.Helper()
+	u, ok := objs.find("ServiceAccount", sandboxNS, runnerAccount)
+	if !ok {
+		t.Errorf("%s: ServiceAccount %s/%s missing", dir, sandboxNS, runnerAccount)
+		return
+	}
+	if sa := convert[corev1.ServiceAccount](t, u); sa.AutomountServiceAccountToken == nil || *sa.AutomountServiceAccountToken {
+		t.Errorf("%s: ServiceAccount %s automountServiceAccountToken = %v, want false", dir, runnerAccount, sa.AutomountServiceAccountToken)
 	}
 }
 

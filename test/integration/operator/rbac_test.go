@@ -49,12 +49,7 @@ func TestManagerCacheWithOperatorRBAC(t *testing.T) {
 	restCfg, admin := envtestClient(t)
 	ctx := t.Context()
 	roles := managerOperatorRoles(t)
-	namespaces := []string{cfg.RunNamespace, cfg.SandboxNamespace}
-	for _, role := range roles {
-		if ns := role.GetNamespace(); ns != "" && !slices.Contains(namespaces, ns) {
-			namespaces = append(namespaces, ns)
-		}
-	}
+	namespaces := operatorRoleNamespaces(roles, cfg.RunNamespace, cfg.SandboxNamespace)
 	for _, ns := range namespaces {
 		if err := admin.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}); err != nil {
 			t.Fatalf("create namespace %s: %v", ns, err)
@@ -62,20 +57,7 @@ func TestManagerCacheWithOperatorRBAC(t *testing.T) {
 	}
 
 	const user = "skua-operator-cache-test"
-	subjects := []rbacv1.Subject{{Kind: rbacv1.UserKind, APIGroup: rbacv1.GroupName, Name: user}}
-	for _, role := range roles {
-		if err := admin.Create(ctx, role); err != nil {
-			t.Fatalf("create %s %s/%s: %v", role.GetKind(), role.GetNamespace(), role.GetName(), err)
-		}
-		ref := rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: role.GetKind(), Name: role.GetName()}
-		var binding client.Object = &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: role.GetName()}, RoleRef: ref, Subjects: subjects}
-		if role.GetNamespace() != "" {
-			binding = &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Namespace: role.GetNamespace(), Name: role.GetName()}, RoleRef: ref, Subjects: subjects}
-		}
-		if err := admin.Create(ctx, binding); err != nil {
-			t.Fatalf("bind %s %s/%s: %v", role.GetKind(), role.GetNamespace(), role.GetName(), err)
-		}
-	}
+	bindRolesToUser(ctx, t, admin, roles, user)
 
 	userCfg := rest.CopyConfig(restCfg)
 	userCfg.Impersonate = rest.ImpersonationConfig{UserName: user}
@@ -109,31 +91,60 @@ func TestManagerCacheWithOperatorRBAC(t *testing.T) {
 		t.Fatal("cache did not start within 15s")
 	}
 
-	for _, ct := range managerCachedTypes() {
-		informerCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		_, err := c.GetInformer(informerCtx, ct.obj)
-		if err == nil {
-			err = c.List(informerCtx, ct.list)
+	requireOperatorInformers(ctx, t, c)
+}
+
+func operatorRoleNamespaces(roles []*unstructured.Unstructured, base ...string) []string {
+	namespaces := base
+	for _, role := range roles {
+		if ns := role.GetNamespace(); ns != "" && !slices.Contains(namespaces, ns) {
+			namespaces = append(namespaces, ns)
 		}
-		cancel()
-		if err != nil {
+	}
+	return namespaces
+}
+
+func bindRolesToUser(ctx context.Context, t *testing.T, admin client.Client, roles []*unstructured.Unstructured, user string) {
+	t.Helper()
+	subjects := []rbacv1.Subject{{Kind: rbacv1.UserKind, APIGroup: rbacv1.GroupName, Name: user}}
+	for _, role := range roles {
+		if err := admin.Create(ctx, role); err != nil {
+			t.Fatalf("create %s %s/%s: %v", role.GetKind(), role.GetNamespace(), role.GetName(), err)
+		}
+		if err := admin.Create(ctx, roleBinding(role, subjects)); err != nil {
+			t.Fatalf("bind %s %s/%s: %v", role.GetKind(), role.GetNamespace(), role.GetName(), err)
+		}
+	}
+}
+
+func roleBinding(role *unstructured.Unstructured, subjects []rbacv1.Subject) client.Object {
+	ref := rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: role.GetKind(), Name: role.GetName()}
+	if role.GetNamespace() != "" {
+		return &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Namespace: role.GetNamespace(), Name: role.GetName()}, RoleRef: ref, Subjects: subjects}
+	}
+	return &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: role.GetName()}, RoleRef: ref, Subjects: subjects}
+}
+
+func requireOperatorInformers(ctx context.Context, t *testing.T, c cache.Cache) {
+	t.Helper()
+	for _, ct := range managerCachedTypes() {
+		if err := listThroughInformer(ctx, c, ct); err != nil {
 			t.Errorf("cached informer of %T as the operator: %v", ct.obj, err)
 		}
 	}
 }
 
-func TestOperatorClusterRoleScope(t *testing.T) {
-	var cluster []rbacv1.PolicyRule
-	for _, u := range managerOperatorRoles(t) {
-		if u.GetKind() != "ClusterRole" {
-			continue
-		}
-		var role rbacv1.ClusterRole
-		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &role); err != nil {
-			t.Fatalf("decode ClusterRole: %v", err)
-		}
-		cluster = append(cluster, role.Rules...)
+func listThroughInformer(ctx context.Context, c cache.Cache, ct cachedType) error {
+	informerCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if _, err := c.GetInformer(informerCtx, ct.obj); err != nil {
+		return err
 	}
+	return c.List(informerCtx, ct.list)
+}
+
+func TestOperatorClusterRoleScope(t *testing.T) {
+	cluster := operatorClusterRules(t)
 	allowed := map[string]bool{"agentprofiles": true, "agentprofiles/status": true, "agentprofiles/finalizers": true}
 	sandboxCRDs := []string{
 		"sandboxclaims.extensions.agents.x-k8s.io",
@@ -145,8 +156,7 @@ func TestOperatorClusterRoleScope(t *testing.T) {
 	for _, rule := range cluster {
 		for _, res := range rule.Resources {
 			if res == "customresourcedefinitions" {
-				if !slices.Equal(rule.APIGroups, []string{"apiextensions.k8s.io"}) || !slices.Equal(rule.Verbs, []string{"get"}) ||
-					!slices.Equal(slices.Sorted(slices.Values(rule.ResourceNames)), sandboxCRDs) {
+				if !ruleGetsExactly(rule, sandboxCRDs) {
 					t.Errorf("ClusterRole grants %v %v on %v customresourcedefinitions, want get on exactly %v", rule.APIGroups, rule.Verbs, rule.ResourceNames, sandboxCRDs)
 				}
 				continue
@@ -160,6 +170,28 @@ func TestOperatorClusterRoleScope(t *testing.T) {
 	if !slices.Contains(granted["agentprofiles/finalizers"], "update") {
 		t.Errorf("ClusterRole grants agentprofiles/finalizers %v, want update", granted["agentprofiles/finalizers"])
 	}
+}
+
+func operatorClusterRules(t *testing.T) []rbacv1.PolicyRule {
+	t.Helper()
+	var cluster []rbacv1.PolicyRule
+	for _, u := range managerOperatorRoles(t) {
+		if u.GetKind() != "ClusterRole" {
+			continue
+		}
+		var role rbacv1.ClusterRole
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &role); err != nil {
+			t.Fatalf("decode ClusterRole: %v", err)
+		}
+		cluster = append(cluster, role.Rules...)
+	}
+	return cluster
+}
+
+func ruleGetsExactly(rule rbacv1.PolicyRule, crds []string) bool {
+	return slices.Equal(rule.APIGroups, []string{"apiextensions.k8s.io"}) &&
+		slices.Equal(rule.Verbs, []string{"get"}) &&
+		slices.Equal(slices.Sorted(slices.Values(rule.ResourceNames)), crds)
 }
 
 func managerOperatorRoles(t *testing.T) []*unstructured.Unstructured {

@@ -45,16 +45,16 @@ Where code goes, how tests and fakes are placed, and what `test/layout` enforces
 
 mise installs the pinned tools. Run `mise install` once in the repo root, then either
 activate mise in your shell (`mise activate`) or prefix commands with `mise exec --`. It
-pins Go, golangci-lint, helm, kind, kubectl, kustomize, flux, shellcheck, zizmor, omp and
-controller-gen. setup-envtest and actionlint are `tool` lines in `go.mod` and run through
+pins Go, golangci-lint, helm, kind, kubectl, kustomize, flux, shellcheck, zizmor, Node, omp
+and controller-gen. setup-envtest and actionlint are `tool` lines in `go.mod` and run through
 `go tool`.
 
 Make is the entry point. `mise run <task>` runs the same `make` target for `build`, `lint`,
 `test`, `test-e2e`, `kind-up` and `kind-down`, and is optional.
 
 `make test` also needs `git` on `PATH`. The kind environment needs `docker` and `git`, and
-`deploy` needs `envsubst`. The extension tests need Node 23.6 or newer for npm and the
-typechecker; they run under the Bun bundled in omp.
+`deploy` needs `envsubst`. The extension tests run under vitest on the Node that `mise.toml`
+pins; the RPC suite also needs omp.
 
 ## Make targets
 
@@ -88,9 +88,13 @@ typechecker; they run under the Bun bundled in omp.
 | `lint-ci` | Audits the workflows and actions with zizmor and actionlint (with shellcheck on `run:` steps), then runs `test/pins`. |
 | `envtest` | Downloads the `ENVTEST_K8S_VERSION` assets into `bin/` through `go tool setup-envtest`. |
 
-`extension/extension.mk` adds `print-omp-version`, `extension-typecheck`, `extension-check`,
-`test-extension` and `test-extension-kind`. They are described in `extension/README.md` and
-are not in `make help`.
+`extension/extension.mk` adds `print-omp-version`, `extension-typecheck`, `extension-lint`,
+`extension-check`, `test-extension` and `test-extension-kind`. They are described in
+`extension/README.md` and are not in `make help`. `extension-lint` runs ESLint (gts with
+typescript-eslint `strictTypeChecked` and `stylisticTypeChecked`) and `prettier --check` over
+`extension/`; `extension-check` and `test-extension` run it. To fix formatting, run
+`dev/node_modules/.bin/prettier --write .` from `extension/`, and
+`dev/node_modules/.bin/eslint . --fix` for the lint fixes ESLint can apply itself.
 
 ## kind environment
 
@@ -129,7 +133,8 @@ Every kind and kubectl command names its kubeconfig, for example
 
 A behaviour is tested at the lowest layer that can show it:
 
-1. Unit tests beside the code, with no API server and no network beyond `httptest`.
+1. Unit tests beside the code, with no API server and no network beyond `httptest`. The
+   extension's unit tests are named `*.spec.ts` and run under vitest on Node.
 2. Black-box envtest suites in `test/integration/`. The stack suite runs the operator,
    `skua-api` and the runner on one envtest, with the fakes below and one fake clock. The
    `operator/` suites start one controller each through its slice's `Setup`, and the `api/`
@@ -172,7 +177,8 @@ To iterate on a kept cluster, rerun `make docker-build-images kind-load deploy` 
 Each integration sits behind an interface, and tests use a fake for it. Fakes take a
 `k8s.io/utils/clock` clock, so tests move time instead of sleeping. An in-process fake is
 package `<pkg>test` beside the package it fakes. A fake that runs as its own process lives in
-`test/fakes/<system>/` with its Dockerfile.
+`test/fakes/<system>/` with its Dockerfile. The extension's fakes live in
+`extension/test/fakes/`, one file per faked system.
 
 | Integration | Fake | Limits it reproduces |
 | --- | --- | --- |
@@ -182,11 +188,11 @@ package `<pkg>test` beside the package it fakes. A fake that runs as its own pro
 | GitHub in kind | Fake forge, image `skua-e2e-forge` (`test/fakes/forge`), Deployment `skua-e2e/skua-e2e-forge` | App JWT checked against `skua-e2e/forge-app`, installation token mint and revoke, pull request create and list, git clone and push over HTTP. |
 | agent-sandbox controllers in envtest | `internal/contract/sandbox/sandboxtest`, with its own envtest checks in `test/integration/sandboxtest` | Claim binding to warm or cold pods, a cold-start delay, pool readiness, and the missing sandbox-name annotation on cold claims. |
 | agent-sandbox version | `internal/operator/compat/installed_test.go` with the controller-runtime fake client; `TestManagerCacheWithOperatorRBAC` in `test/integration/operator` runs the version check in envtest with the operator's RBAC | Missing or unserved CRDs, no controller, versions outside the supported range. |
-| OIDC issuer | `internal/api/auth/authtest`; `extension/test/fake/oidc.ts`; Dex in kind | Expired tokens, tokens from another issuer or signed by an unknown key, any audience, key rotation. |
+| OIDC issuer | `internal/api/auth/authtest`; `extension/test/fakes/oidc.ts`; Dex in kind | Expired tokens, tokens from another issuer or signed by an unknown key, any audience, key rotation. |
 | Kubernetes TokenReview | `internal/api/auth/authtest` `TokenReviews`; the real API server in kind | Service account tokens bound to a pod and an audience; any other token is unauthenticated. |
 | `skua-api` for the runner | `internal/runner/apiclient/apiclienttest` | The runner endpoints over `httptest`, with dropped streams, refusals and failing event and result posts. |
 | The agent | `internal/runner/agent/omprpc/omprpctest`, a scripted `omp --mode rpc`, served by image `skua-e2e-fakeagent` (`test/fakes/omp`) as profile `fake` | Behaviour scripted per prompt (`SCRIPT:<name> <args>`), including pushes and pull requests against the fake forge. |
-| `skua-api` for the extension | `extension/test/fake/api.ts` | The dev API and SSE stream the extension consumes. |
+| `skua-api` for the extension | `extension/test/fakes/api.ts` | The dev API and SSE stream the extension consumes. |
 | Internet | Container `skua-e2e-external`, URL in `/tmp/skua-dev.env` as `SKUA_EXTERNAL_URL` | An egress target outside the cluster CIDRs. |
 
 envtest suites boot through `internal/testenv`, which installs the skua CRDs and the

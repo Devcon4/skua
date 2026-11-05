@@ -35,11 +35,12 @@ func (r *runner) outputs(ctx context.Context, a wire.Assign) wire.Outputs {
 	case strings.TrimSpace(refs) != "":
 		out.Branch = branch
 	}
-	if n, err := r.pullRequest(ctx, a.Workspace.Repo, branch); err != nil {
+	n, err := r.pullRequest(ctx, a.Workspace.Repo, branch)
+	if err != nil {
 		slog.Info("run pull request not found", "run", a.Run, "err", err)
-	} else {
-		out.PullRequest = n
+		return out
 	}
+	out.PullRequest = n
 	return out
 }
 

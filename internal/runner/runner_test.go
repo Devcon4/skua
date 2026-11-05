@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -148,6 +149,22 @@ func (e *runnerEnv) streams() []apiclienttest.Request {
 	return out
 }
 
+func (e *runnerEnv) outboxEvents() []wire.Event {
+	e.t.Helper()
+	b, err := os.ReadFile(filepath.Join(e.l.RunDir, "outbox.jsonl"))
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	var out []wire.Event
+	for line := range bytes.SplitSeq(b, []byte("\n")) {
+		var ev wire.Event
+		if json.Unmarshal(line, &ev) == nil && ev.Type != "" {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
 func (e *runnerEnv) send(typ string, v any) int64 {
 	e.t.Helper()
 	b, err := json.Marshal(v)
@@ -257,4 +274,29 @@ func TestRunnerRestartResumesAfterLastAppliedCommand(t *testing.T) {
 		t.Fatalf("events stored for %s = %+v, want the one text event", testRun, evs)
 	}
 	eventually(t, 10*time.Second, func() bool { return e.savedState().LastCommand == 3 })
+}
+
+func TestRunnerTerminateRelaysQueuedEvents(t *testing.T) {
+	e := newRunnerEnv(t)
+	e.api.FailEvents(http.StatusServiceUnavailable, 1000)
+	text, err := json.Marshal(wire.TextData{Delta: "step 4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	queued := wire.Event{Type: wire.EventText, Data: text}
+	ad := newFakeAdapter()
+	ad.queued = []wire.Event{queued}
+	ad.onPrompt = func(_ *fakeAdapter, ctx context.Context, _ int, _ string) (agent.TurnResult, error) {
+		<-ctx.Done()
+		return agent.TurnResult{Status: "aborted"}, ctx.Err()
+	}
+	stop := e.launch(ad, e.settings())
+	e.send(wire.CommandAssign, plainAssign())
+	eventually(t, 10*time.Second, func() bool { return len(ad.snapshot().prompts) == 1 })
+	if got := stop(); got != exitTerminated {
+		t.Fatalf("runner exit code = %d, want %d", got, exitTerminated)
+	}
+	if got := e.outboxEvents(); len(got) != 1 || got[0].Type != queued.Type || string(got[0].Data) != string(queued.Data) {
+		t.Fatalf("outbox events = %+v, want the queued %+v", got, queued)
+	}
 }

@@ -203,9 +203,11 @@ func (s *Server) Serve(ctx context.Context, apiLn, healthLn net.Listener) error 
 	cacheCtx, stopCache := context.WithCancel(context.WithoutCancel(ctx))
 	defer stopCache()
 	go func() {
-		if err := s.cache.Start(cacheCtx); err != nil {
+		err := s.cache.Start(cacheCtx)
+		switch {
+		case err != nil:
 			errc <- fmt.Errorf("api: cache: %w", err)
-		} else if cacheCtx.Err() == nil {
+		case cacheCtx.Err() == nil:
 			errc <- errors.New("api: cache stopped")
 		}
 	}()

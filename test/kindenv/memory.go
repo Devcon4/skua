@@ -63,19 +63,7 @@ func (e *env) samplePeaks(ctx context.Context) *peakSampler {
 	go func() {
 		defer close(s.done)
 		for {
-			if nodes, err := e.provider.ListNodes(e.cfg.Name); err == nil && len(nodes) > 0 {
-				names := make([]string, len(nodes))
-				for i, n := range nodes {
-					names[i] = n.String()
-				}
-				if usage, err := dockerStats(ctx, names); err == nil {
-					s.mu.Lock()
-					for n, mib := range usage {
-						s.peaks[n] = max(s.peaks[n], mib)
-					}
-					s.mu.Unlock()
-				}
-			}
+			s.sample(ctx, e.nodeContainers())
 			select {
 			case <-ctx.Done():
 				return
@@ -84,6 +72,33 @@ func (e *env) samplePeaks(ctx context.Context) *peakSampler {
 		}
 	}()
 	return s
+}
+
+func (e *env) nodeContainers() []string {
+	nodes, err := e.provider.ListNodes(e.cfg.Name)
+	if err != nil {
+		return nil
+	}
+	names := make([]string, len(nodes))
+	for i, n := range nodes {
+		names[i] = n.String()
+	}
+	return names
+}
+
+func (s *peakSampler) sample(ctx context.Context, containers []string) {
+	if len(containers) == 0 {
+		return
+	}
+	usage, err := dockerStats(ctx, containers)
+	if err != nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for n, mib := range usage {
+		s.peaks[n] = max(s.peaks[n], mib)
+	}
 }
 
 func (s *peakSampler) stop() map[string]float64 {

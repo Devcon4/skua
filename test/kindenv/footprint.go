@@ -105,11 +105,7 @@ func (f Footprint) Stop(summary io.Writer) error {
 	fmt.Fprintf(&b, "### kind footprint (%s)\n", f.Name)
 	fmt.Fprintf(&b, "- runner nproc: %d\n", runtime.NumCPU())
 	fmt.Fprintf(&b, "- runner MemTotal: %s\n", memTotal())
-	if stateErr == nil {
-		fmt.Fprintf(&b, "- kindenv up wall time: %d s\n", state.WallSeconds)
-	} else {
-		fmt.Fprintf(&b, "- kindenv up wall time: no state file %s\n", StateFile(f.Name))
-	}
+	fmt.Fprintf(&b, "- kindenv up wall time: %s\n", f.wallTime(state, stateErr))
 	if len(peaks) == 0 {
 		b.WriteString("- peak node memory: no samples\n")
 	}
@@ -127,6 +123,13 @@ func (f Footprint) Stop(summary io.Writer) error {
 	}
 	_, err = io.WriteString(summary, b.String())
 	return err
+}
+
+func (f Footprint) wallTime(state State, stateErr error) string {
+	if stateErr != nil {
+		return "no state file " + StateFile(f.Name)
+	}
+	return fmt.Sprintf("%d s", state.WallSeconds)
 }
 
 func (f Footprint) peaks() (map[string]float64, float64, error) {

@@ -99,6 +99,7 @@ func podSpec(p *v1alpha1.AgentProfile, cfg *config.Config) corev1.PodSpec {
 				{Name: sandbox.VolumeBin, MountPath: sandbox.BinDir, ReadOnly: true},
 				{Name: sandbox.VolumeRun, MountPath: sandbox.RunDir},
 				{Name: sandbox.VolumeWorkspace, MountPath: sandbox.WorkDir},
+				{Name: sandbox.VolumeWorkspace, MountPath: tmpDir, SubPath: tmpSubPath},
 				{Name: sandbox.VolumeToken, MountPath: sandbox.TokenDir, ReadOnly: true},
 			},
 			SecurityContext: containerSecurityContext(),
@@ -121,9 +122,16 @@ func podSpec(p *v1alpha1.AgentProfile, cfg *config.Config) corev1.PodSpec {
 	}
 }
 
+// The root filesystem is read-only; /tmp is a subPath of the workspace so it shares its size limit.
+const (
+	tmpDir     = "/tmp"
+	tmpSubPath = ".tmp"
+)
+
 func containerSecurityContext() *corev1.SecurityContext {
 	return &corev1.SecurityContext{
 		AllowPrivilegeEscalation: ptr.To(false),
+		ReadOnlyRootFilesystem:   ptr.To(true),
 		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 	}
 }

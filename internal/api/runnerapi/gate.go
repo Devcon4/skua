@@ -82,15 +82,7 @@ func (rr *Routes) reviewPod(r *http.Request) (*corev1.Pod, error) {
 }
 
 func (rr *Routes) checkVersion(r *http.Request, pod *corev1.Pod) error {
-	header := r.Header.Get(wire.HeaderRunnerVersion)
-	detail := ""
-	if header == "" {
-		detail = wire.HeaderRunnerVersion + " header missing"
-	} else if v, err := semver.NewVersion(header); err != nil {
-		detail = fmt.Sprintf("runner version %q is not semver", header)
-	} else if !rr.versions.Check(v) {
-		detail = fmt.Sprintf("runner version %s is outside %s", header, rr.deps.Config.Runner.SupportedVersions)
-	}
+	detail := rr.unsupportedRunnerVersion(r.Header.Get(wire.HeaderRunnerVersion))
 	if detail == "" {
 		return nil
 	}
@@ -107,6 +99,20 @@ func (rr *Routes) checkVersion(r *http.Request, pod *corev1.Pod) error {
 		}
 	}
 	return &refusal{http.StatusBadRequest, v1alpha1.ReasonRunnerUnsupported, detail}
+}
+
+func (rr *Routes) unsupportedRunnerVersion(header string) string {
+	if header == "" {
+		return wire.HeaderRunnerVersion + " header missing"
+	}
+	v, err := semver.NewVersion(header)
+	if err != nil {
+		return fmt.Sprintf("runner version %q is not semver", header)
+	}
+	if !rr.versions.Check(v) {
+		return fmt.Sprintf("runner version %s is outside %s", header, rr.deps.Config.Runner.SupportedVersions)
+	}
+	return ""
 }
 
 func (rr *Routes) callerRun(ctx context.Context, w http.ResponseWriter, pod *corev1.Pod, want string) (*v1alpha1.AgentRun, bool) {

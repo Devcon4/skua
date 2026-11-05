@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -173,9 +174,39 @@ func (f *fluxEnv) applyExample(version string) {
 	if err != nil {
 		f.t.Fatal(err)
 	}
+	release, cluster := splitHelmRelease(yamlDocs(strings.ReplaceAll(string(raw), newAgentSandboxVersion, version)))
+	if release == "" {
+		f.t.Fatal("agent-sandbox.yaml has no HelmRelease")
+	}
+	if fleetRefCount(cluster) != 1 {
+		f.t.Fatalf("agent-sandbox.yaml must name the fleet source exactly once as '%s'", fleetRef)
+	}
+
+	fleet := filepath.Join(f.work, version, "fleet")
+	if err := os.MkdirAll(filepath.Join(fleet, fleetPath), 0o755); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fleet, fleetPath, "release.yaml"), []byte(release), 0o644); err != nil {
+		f.t.Fatal(err)
+	}
+	sum := sha1.Sum([]byte(release))
+	mustRun(f.t, nil, fluxBin(), "push", "artifact", "oci://127.0.0.1:"+f.registryPort+"/skua-flux/fleet:latest",
+		"--path", fleet, "--source", "file://"+filepath.Join(f.examples, "agent-sandbox.yaml"),
+		"--revision", version+"@sha1:"+hex.EncodeToString(sum[:]), "--insecure-registry")
+	f.apply([]byte(strings.Replace(cluster, fleetRef, fleetOCIRef, 1)))
+
+	f.reconcile("gitrepository/agent-sandbox", 60)
+	f.reconcile("kustomization/agent-sandbox-crds", 60)
+	f.reconcile("ocirepository/flux-system", 30)
+	f.reconcile("kustomization/agent-sandbox", 180)
+	f.reconcile("helmchart/flux-system-agent-sandbox", 60)
+	f.reconcile("helmrelease/agent-sandbox", 120)
+}
+
+func yamlDocs(text string) [][]string {
 	var docs [][]string
 	var doc []string
-	for _, line := range strings.SplitAfter(strings.ReplaceAll(string(raw), newAgentSandboxVersion, version), "\n") {
+	for _, line := range strings.SplitAfter(text, "\n") {
 		if line == "" {
 			continue
 		}
@@ -185,60 +216,40 @@ func (f *fluxEnv) applyExample(version string) {
 		}
 		doc = append(doc, line)
 	}
-	docs = append(docs, doc)
+	return append(docs, doc)
+}
 
-	var release, cluster strings.Builder
+func isHelmRelease(doc []string) bool {
+	return slices.ContainsFunc(doc, func(line string) bool {
+		return strings.TrimSuffix(line, "\n") == "kind: HelmRelease"
+	})
+}
+
+func splitHelmRelease(docs [][]string) (release, cluster string) {
+	var clusterDocs strings.Builder
 	for _, d := range docs {
 		if len(d) == 0 {
 			continue
 		}
 		text := strings.Join(d, "")
-		isRelease := false
-		for _, line := range d {
-			if strings.TrimSuffix(line, "\n") == "kind: HelmRelease" {
-				isRelease = true
-			}
+		if isHelmRelease(d) {
+			release = text
+			continue
 		}
-		if isRelease {
-			release.Reset()
-			release.WriteString(text)
-		} else {
-			cluster.WriteString("---\n")
-			cluster.WriteString(text)
-		}
+		clusterDocs.WriteString("---\n")
+		clusterDocs.WriteString(text)
 	}
-	if release.Len() == 0 {
-		f.t.Fatal("agent-sandbox.yaml has no HelmRelease")
-	}
+	return release, clusterDocs.String()
+}
+
+func fleetRefCount(cluster string) int {
 	refs := 0
-	for _, line := range strings.Split(cluster.String(), "\n") {
+	for _, line := range strings.Split(cluster, "\n") {
 		if strings.Contains(line, fleetRef) {
 			refs++
 		}
 	}
-	if refs != 1 {
-		f.t.Fatalf("agent-sandbox.yaml must name the fleet source exactly once as '%s'", fleetRef)
-	}
-
-	fleet := filepath.Join(f.work, version, "fleet")
-	if err := os.MkdirAll(filepath.Join(fleet, fleetPath), 0o755); err != nil {
-		f.t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(fleet, fleetPath, "release.yaml"), []byte(release.String()), 0o644); err != nil {
-		f.t.Fatal(err)
-	}
-	sum := sha1.Sum([]byte(release.String()))
-	mustRun(f.t, nil, fluxBin(), "push", "artifact", "oci://127.0.0.1:"+f.registryPort+"/skua-flux/fleet:latest",
-		"--path", fleet, "--source", "file://"+filepath.Join(f.examples, "agent-sandbox.yaml"),
-		"--revision", version+"@sha1:"+hex.EncodeToString(sum[:]), "--insecure-registry")
-	f.apply([]byte(strings.Replace(cluster.String(), fleetRef, fleetOCIRef, 1)))
-
-	f.reconcile("gitrepository/agent-sandbox", 60)
-	f.reconcile("kustomization/agent-sandbox-crds", 60)
-	f.reconcile("ocirepository/flux-system", 30)
-	f.reconcile("kustomization/agent-sandbox", 180)
-	f.reconcile("helmchart/flux-system-agent-sandbox", 60)
-	f.reconcile("helmrelease/agent-sandbox", 120)
+	return refs
 }
 
 func (f *fluxEnv) status(obj string) (handled string, ready metav1.ConditionStatus) {
@@ -292,18 +303,27 @@ func (f *fluxEnv) diagnose(obj string) {
 	out, err := run(f.t.Context(), nil, fluxBin(), "--kubeconfig", f.kubeconfig, "get", "all", "-n", "flux-system")
 	f.logOutput(out, err)
 	f.t.Log("events in flux-system")
-	var events corev1.EventList
-	if out, err := f.kubectl("get", "events", "-n", "flux-system", "--sort-by=.lastTimestamp", "-o", "json"); err != nil {
-		f.t.Log(err)
-	} else if json.Unmarshal(out, &events) == nil {
-		for _, e := range events.Items {
-			f.t.Logf("%s %s %s/%s: %s", e.Type, e.Reason, e.InvolvedObject.Kind, e.InvolvedObject.Name, e.Message)
-		}
-	}
+	f.logEvents()
 	for _, controller := range controllersOf(obj) {
 		f.t.Logf("%s log tail", controller)
 		out, err := f.kubectl("logs", "-n", "flux-system", "deploy/"+controller, "--tail=40")
 		f.logOutput(out, err)
+	}
+}
+
+func (f *fluxEnv) logEvents() {
+	f.t.Helper()
+	out, err := f.kubectl("get", "events", "-n", "flux-system", "--sort-by=.lastTimestamp", "-o", "json")
+	if err != nil {
+		f.t.Log(err)
+		return
+	}
+	var events corev1.EventList
+	if json.Unmarshal(out, &events) != nil {
+		return
+	}
+	for _, e := range events.Items {
+		f.t.Logf("%s %s %s/%s: %s", e.Type, e.Reason, e.InvolvedObject.Kind, e.InvolvedObject.Name, e.Message)
 	}
 }
 

@@ -80,61 +80,82 @@ func TestChartShipsNoCRDs(t *testing.T) {
 }
 
 func TestAppSecretAccessIsSingleGet(t *testing.T) {
-	singleGet := func(name string) []rbacv1.PolicyRule {
-		return []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"secrets"}, ResourceNames: []string{name}, Verbs: []string{"get"}}}
-	}
 	for _, vs := range valuesSets {
 		t.Run(vs.name, func(t *testing.T) {
-			objs := render(t, vs.path)
-			cfg := renderedConfig(t, objs)
-			if vs.path == fullValues && cfg.GitHub == nil {
-				t.Fatalf("full-values.yaml renders no github block")
-			}
-			if vs.path == forgeNone && cfg.GitHub != nil {
-				t.Fatalf("forge-none.yaml renders a github block")
-			}
-
-			type grant struct {
-				namespace string
-				rules     []rbacv1.PolicyRule
-			}
-			want := map[string]grant{
-				"LiteLLM operator key": {cfg.Gateway.OperatorKeySecret.Namespace, singleGet(cfg.Gateway.OperatorKeySecret.Name)},
-			}
-			if cfg.GitHub != nil {
-				want["GitHub App Secret"] = grant{cfg.GitHub.AppSecret.Namespace, singleGet(cfg.GitHub.AppSecret.Name)}
-			}
-
-			var outside []rbacv1.Role
-			for _, u := range objs.ofKind("Role") {
-				r := convert[rbacv1.Role](t, u)
-				if r.Namespace != releaseNS && slices.ContainsFunc(r.Rules, grantsSecrets) {
-					outside = append(outside, r)
-				}
-			}
-			if len(outside) != len(want) {
-				t.Errorf("%d Roles mention secrets outside namespace %s, want %d (%v)", len(outside), releaseNS, len(want), roleIDs(outside))
-			}
-			for purpose, g := range want {
-				idx := slices.IndexFunc(outside, func(r rbacv1.Role) bool {
-					return r.Namespace == g.namespace && reflect.DeepEqual(r.Rules, g.rules)
-				})
-				if idx < 0 {
-					t.Errorf("no Role for the %s in namespace %s with rules %+v; Roles mentioning secrets outside %s: %v", purpose, g.namespace, g.rules, releaseNS, roleIDs(outside))
-					continue
-				}
-				assertOnlyOperatorBound(t, objs, outside[idx])
-			}
-
-			for _, u := range objs.ofKind("ClusterRole") {
-				cr := convert[rbacv1.ClusterRole](t, u)
-				for _, r := range cr.Rules {
-					if grantsSecrets(r) {
-						t.Errorf("ClusterRole %s grants %v on secrets", cr.Name, r.Verbs)
-					}
-				}
-			}
+			testAppSecretAccessIsSingleGet(t, vs)
 		})
+	}
+}
+
+type secretGrant struct {
+	namespace string
+	rules     []rbacv1.PolicyRule
+}
+
+func singleGet(name string) []rbacv1.PolicyRule {
+	return []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"secrets"}, ResourceNames: []string{name}, Verbs: []string{"get"}}}
+}
+
+func testAppSecretAccessIsSingleGet(t *testing.T, vs valuesSet) {
+	objs := render(t, vs.path)
+	cfg := renderedConfig(t, objs)
+	if vs.path == fullValues && cfg.GitHub == nil {
+		t.Fatalf("full-values.yaml renders no github block")
+	}
+	if vs.path == forgeNone && cfg.GitHub != nil {
+		t.Fatalf("forge-none.yaml renders a github block")
+	}
+
+	want := expectedSecretGrants(cfg)
+	outside := secretRolesOutsideRelease(t, objs)
+	if len(outside) != len(want) {
+		t.Errorf("%d Roles mention secrets outside namespace %s, want %d (%v)", len(outside), releaseNS, len(want), roleIDs(outside))
+	}
+	for purpose, g := range want {
+		idx := slices.IndexFunc(outside, func(r rbacv1.Role) bool {
+			return r.Namespace == g.namespace && reflect.DeepEqual(r.Rules, g.rules)
+		})
+		if idx < 0 {
+			t.Errorf("no Role for the %s in namespace %s with rules %+v; Roles mentioning secrets outside %s: %v", purpose, g.namespace, g.rules, releaseNS, roleIDs(outside))
+			continue
+		}
+		assertOnlyOperatorBound(t, objs, outside[idx])
+	}
+
+	assertNoClusterRoleGrantsSecrets(t, objs)
+}
+
+func expectedSecretGrants(cfg *config.Config) map[string]secretGrant {
+	want := map[string]secretGrant{
+		"LiteLLM operator key": {cfg.Gateway.OperatorKeySecret.Namespace, singleGet(cfg.Gateway.OperatorKeySecret.Name)},
+	}
+	if cfg.GitHub != nil {
+		want["GitHub App Secret"] = secretGrant{cfg.GitHub.AppSecret.Namespace, singleGet(cfg.GitHub.AppSecret.Name)}
+	}
+	return want
+}
+
+func secretRolesOutsideRelease(t *testing.T, objs manifestSet) []rbacv1.Role {
+	t.Helper()
+	var outside []rbacv1.Role
+	for _, u := range objs.ofKind("Role") {
+		r := convert[rbacv1.Role](t, u)
+		if r.Namespace != releaseNS && slices.ContainsFunc(r.Rules, grantsSecrets) {
+			outside = append(outside, r)
+		}
+	}
+	return outside
+}
+
+func assertNoClusterRoleGrantsSecrets(t *testing.T, objs manifestSet) {
+	t.Helper()
+	for _, u := range objs.ofKind("ClusterRole") {
+		cr := convert[rbacv1.ClusterRole](t, u)
+		for _, r := range cr.Rules {
+			if grantsSecrets(r) {
+				t.Errorf("ClusterRole %s grants %v on secrets", cr.Name, r.Verbs)
+			}
+		}
 	}
 }
 
@@ -349,30 +370,43 @@ func TestRestrictedPods(t *testing.T) {
 	for _, vs := range valuesSets {
 		t.Run(vs.name, func(t *testing.T) {
 			objs := render(t, vs.path)
-			for _, name := range controlPlane {
-				d := deployment(t, objs, name)
-				pod := d.Spec.Template.Spec.SecurityContext
-				if pod == nil {
-					pod = &corev1.PodSecurityContext{}
-				}
-				for _, c := range slices.Concat(d.Spec.Template.Spec.InitContainers, d.Spec.Template.Spec.Containers) {
-					assertRestricted(t, name, c, pod)
-				}
-			}
-
+			assertControlPlaneRestricted(t, objs)
 			cfg := renderedConfig(t, objs)
-			ns := mustFind[corev1.Namespace](t, objs, "Namespace", "", cfg.SandboxNamespace)
-			for _, mode := range []string{"enforce", "warn", "audit"} {
-				if got := ns.Labels["pod-security.kubernetes.io/"+mode]; got != "restricted" {
-					t.Errorf("Namespace %s label pod-security.kubernetes.io/%s = %q, want restricted", ns.Name, mode, got)
-				}
-			}
-
-			sa := mustFind[corev1.ServiceAccount](t, objs, "ServiceAccount", cfg.SandboxNamespace, runnerAccount)
-			if sa.AutomountServiceAccountToken == nil || *sa.AutomountServiceAccountToken {
-				t.Errorf("ServiceAccount %s/%s automountServiceAccountToken = %v, want false", cfg.SandboxNamespace, runnerAccount, sa.AutomountServiceAccountToken)
-			}
+			assertSandboxNamespaceRestricted(t, objs, cfg.SandboxNamespace)
+			assertRunnerTokenNotMounted(t, objs, cfg.SandboxNamespace)
 		})
+	}
+}
+
+func assertControlPlaneRestricted(t *testing.T, objs manifestSet) {
+	t.Helper()
+	for _, name := range controlPlane {
+		d := deployment(t, objs, name)
+		pod := d.Spec.Template.Spec.SecurityContext
+		if pod == nil {
+			pod = &corev1.PodSecurityContext{}
+		}
+		for _, c := range slices.Concat(d.Spec.Template.Spec.InitContainers, d.Spec.Template.Spec.Containers) {
+			assertRestricted(t, name, c, pod)
+		}
+	}
+}
+
+func assertSandboxNamespaceRestricted(t *testing.T, objs manifestSet, sandboxNS string) {
+	t.Helper()
+	ns := mustFind[corev1.Namespace](t, objs, "Namespace", "", sandboxNS)
+	for _, mode := range []string{"enforce", "warn", "audit"} {
+		if got := ns.Labels["pod-security.kubernetes.io/"+mode]; got != "restricted" {
+			t.Errorf("Namespace %s label pod-security.kubernetes.io/%s = %q, want restricted", ns.Name, mode, got)
+		}
+	}
+}
+
+func assertRunnerTokenNotMounted(t *testing.T, objs manifestSet, sandboxNS string) {
+	t.Helper()
+	sa := mustFind[corev1.ServiceAccount](t, objs, "ServiceAccount", sandboxNS, runnerAccount)
+	if sa.AutomountServiceAccountToken == nil || *sa.AutomountServiceAccountToken {
+		t.Errorf("ServiceAccount %s/%s automountServiceAccountToken = %v, want false", sandboxNS, runnerAccount, sa.AutomountServiceAccountToken)
 	}
 }
 
@@ -530,24 +564,27 @@ func (s schemaDoc) walk(typ reflect.Type, node any, path string, missing *[]stri
 			*missing = append(*missing, keyPath)
 			continue
 		}
-		ft := f.Type
-		if ft.Kind() == reflect.Pointer {
-			ft = ft.Elem()
-		}
-		if ft.Kind() == reflect.Slice {
-			ft = ft.Elem()
-			child = s.items(child)
-			keyPath += "[]"
-			if child == nil {
-				if ft.Kind() == reflect.Struct {
-					*missing = append(*missing, keyPath)
-				}
-				continue
+		s.walkField(f.Type, child, keyPath, missing)
+	}
+}
+
+func (s schemaDoc) walkField(ft reflect.Type, child any, keyPath string, missing *[]string) {
+	if ft.Kind() == reflect.Pointer {
+		ft = ft.Elem()
+	}
+	if ft.Kind() == reflect.Slice {
+		ft = ft.Elem()
+		child = s.items(child)
+		keyPath += "[]"
+		if child == nil {
+			if ft.Kind() == reflect.Struct {
+				*missing = append(*missing, keyPath)
 			}
+			return
 		}
-		if ft.Kind() == reflect.Struct && !reflect.PointerTo(ft).Implements(jsonUnmarshaler) {
-			s.walk(ft, child, keyPath, missing)
-		}
+	}
+	if ft.Kind() == reflect.Struct && !reflect.PointerTo(ft).Implements(jsonUnmarshaler) {
+		s.walk(ft, child, keyPath, missing)
 	}
 }
 
@@ -572,21 +609,7 @@ func TestRoutesOnlyWhenEnabled(t *testing.T) {
 		t.Errorf("full-values render has %d Ingress, want 1", len(ingresses))
 	}
 	for _, u := range ingresses {
-		ing := convert[networkingv1.Ingress](t, u)
-		if len(ing.Spec.Rules) == 0 {
-			t.Errorf("Ingress %s has no rules", ing.Name)
-		}
-		for _, r := range ing.Spec.Rules {
-			if r.HTTP == nil || len(r.HTTP.Paths) == 0 {
-				t.Errorf("Ingress %s rule for host %q has no paths", ing.Name, r.Host)
-				continue
-			}
-			for _, p := range r.HTTP.Paths {
-				if s := p.Backend.Service; s == nil || s.Name != svc.Name || s.Port.Name != "http" {
-					t.Errorf("Ingress %s path %s backend = %+v, want Service %s port http", ing.Name, p.Path, p.Backend, svc.Name)
-				}
-			}
-		}
+		assertIngressRoutesToService(t, convert[networkingv1.Ingress](t, u), svc.Name)
 	}
 
 	routes := objs.ofKind("HTTPRoute")
@@ -594,18 +617,40 @@ func TestRoutesOnlyWhenEnabled(t *testing.T) {
 		t.Errorf("full-values render has %d HTTPRoute, want 1", len(routes))
 	}
 	for _, u := range routes {
-		route := convert[httpRoute](t, u)
-		if len(route.Spec.Rules) == 0 {
-			t.Errorf("HTTPRoute %s has no rules", u.GetName())
+		assertHTTPRouteRoutesToService(t, u.GetName(), convert[httpRoute](t, u), svc.Name, servicePort)
+	}
+}
+
+func assertIngressRoutesToService(t *testing.T, ing networkingv1.Ingress, service string) {
+	t.Helper()
+	if len(ing.Spec.Rules) == 0 {
+		t.Errorf("Ingress %s has no rules", ing.Name)
+	}
+	for _, r := range ing.Spec.Rules {
+		if r.HTTP == nil || len(r.HTTP.Paths) == 0 {
+			t.Errorf("Ingress %s rule for host %q has no paths", ing.Name, r.Host)
+			continue
 		}
-		for _, r := range route.Spec.Rules {
-			if len(r.BackendRefs) == 0 {
-				t.Errorf("HTTPRoute %s rule has no backendRefs", u.GetName())
+		for _, p := range r.HTTP.Paths {
+			if s := p.Backend.Service; s == nil || s.Name != service || s.Port.Name != "http" {
+				t.Errorf("Ingress %s path %s backend = %+v, want Service %s port http", ing.Name, p.Path, p.Backend, service)
 			}
-			for _, ref := range r.BackendRefs {
-				if (ref.Kind != "" && ref.Kind != "Service") || ref.Name != svc.Name || ref.Port != servicePort {
-					t.Errorf("HTTPRoute %s backendRef = %+v, want Service %s port %d (http)", u.GetName(), ref, svc.Name, servicePort)
-				}
+		}
+	}
+}
+
+func assertHTTPRouteRoutesToService(t *testing.T, name string, route httpRoute, service string, servicePort int32) {
+	t.Helper()
+	if len(route.Spec.Rules) == 0 {
+		t.Errorf("HTTPRoute %s has no rules", name)
+	}
+	for _, r := range route.Spec.Rules {
+		if len(r.BackendRefs) == 0 {
+			t.Errorf("HTTPRoute %s rule has no backendRefs", name)
+		}
+		for _, ref := range r.BackendRefs {
+			if (ref.Kind != "" && ref.Kind != "Service") || ref.Name != service || ref.Port != servicePort {
+				t.Errorf("HTTPRoute %s backendRef = %+v, want Service %s port %d (http)", name, ref, service, servicePort)
 			}
 		}
 	}

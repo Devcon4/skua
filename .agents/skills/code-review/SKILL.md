@@ -49,9 +49,13 @@ Each slice gets every lens that applies. One reviewer per lens per slice, read-o
    (expiry, budgets, 409s, dropped streams); no test of wiring or copies; no sleeps where a
    fake clock fits; flakiness (timing windows, shared state, port reuse).
 5. **Simplicity and maintainability.** Dead code, duplicated helpers across packages,
-   abstractions with one caller, functions nested past three blocks, early returns missing,
-   names that differ from the domain terms (`AgentRun`, `AgentProfile`, claim, runner), and
-   comments outside `.agents/rules/minimal-comments.md`.
+   abstractions with one caller, and comments outside `.agents/rules/minimal-comments.md`.
+   Control flow, in Go and TypeScript alike: a block nested past three levels; any `else` or
+   `else if` (lint catches TypeScript; Go needs review where `revive` does not fire); a
+   missing early return or guard clause; a business rule left as an inline condition or a
+   loose boolean or string instead of a named predicate, step function or domain type
+   (`runIsTerminal`, `tokenNeedsRemint`); names that differ from the domain terms
+   (`AgentRun`, `AgentProfile`, claim, runner).
 6. **Structure.** What `test/layout` cannot see, against `AGENTS.md` Code conventions:
    a file over 300 lines; more than one concern in a file, or a file not named for its
    concern; a contract string (endpoint path, refusal reason, env name, finalizer, Secret
