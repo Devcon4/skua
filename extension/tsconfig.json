@@ -2,6 +2,14 @@
   "compilerOptions": {
     "noEmit": true,
     "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitReturns": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "target": "esnext",
     "lib": ["esnext"],
     "module": "nodenext",
@@ -14,5 +22,5 @@
     "typeRoots": ["./dev/node_modules/@types"],
     "types": ["node"]
   },
-  "include": ["index.ts", "src", "test"]
+  "include": ["index.ts", "vitest.config.ts", "src", "test"]
 }

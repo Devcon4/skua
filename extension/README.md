@@ -17,9 +17,10 @@ remote agent at its next tool boundary. The run's result comes back as the child
   release.
 - A skua endpoint, its OIDC issuer URL and the public client id. The cluster installer has
   these values.
-- Node >= 23.6, only for the tooling (npm, the typechecker). omp loads the TypeScript
-  directly; there is no build step. The only runtime imports are omp's own `@oh-my-pi/*`
-  modules, which omp provides to every extension.
+- Node 26.13.0, only for the tooling (npm, the typechecker, the tests). `mise install` from
+  the repo root installs it. omp loads the TypeScript directly; there is no build step. The
+  only runtime imports are omp's own `@oh-my-pi/*` modules, which omp provides to every
+  extension.
 
 ## Install
 
@@ -48,7 +49,8 @@ For example, against the kind development cluster:
 ```
 
 Login uses the OIDC authorization code flow with PKCE. It opens the issuer's page in a
-browser (`$BROWSER`, else `xdg-open`, `open` or `wslview`) and waits on a loopback port.
+browser (`$BROWSER`, else `xdg-open`, `open` or `wslview`) and waits on a loopback port for
+`loginTimeoutSeconds` (default 300).
 When no browser starts or the loopback port cannot be bound, it falls back to the device
 code flow and shows a URL and a user code to enter on any device. `/skua login --device`
 uses the device code flow directly, which suits SSH sessions. The issuer must advertise
@@ -135,6 +137,19 @@ The extension keeps its state in `<agent dir>/skua/`. The agent dir is `~/.omp/a
 
 The directory is mode 0700. Deleting it logs you out and forgets the endpoint.
 
+`config.json` fields beyond the endpoint, issuer and client id:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `scopes` | `["openid", "profile", "email", "offline_access"]` | OIDC scopes requested at login. |
+| `loopbackPort` | `0` | Port for the browser login callback on `127.0.0.1`. `0` takes any free port. |
+| `heartbeatTimeoutMs` | `45000` | Silence on a run's event stream after which the extension reconnects. |
+| `profileRefreshMs` | `600000` | Interval of the background profile refresh. |
+| `loginTimeoutSeconds` | `300` | How long the browser login waits for the issuer's callback before it fails. A positive integer; any other value makes the config invalid. |
+
+An invalid value in any field makes the extension refuse the whole file. `/skua` commands
+then name the file and ask you to fix it or run `/skua login <endpoint> <issuer> <clientId>`.
+
 ## omp version warning
 
 At startup the extension compares omp's version with `extension/omp-range.json`. Outside that
@@ -148,17 +163,47 @@ the change only when the suite passes.
 
 ## Tests
 
-From the repo root, with Node >= 23.6 and omp installed. The tests run under the Bun that
-ships inside omp (`BUN_BE_BUN=1 omp test`), the same runtime that loads the extension, and
-resolve `@oh-my-pi/*` from `extension/dev/node_modules` through the `extension/node_modules`
-link that `make extension-deps` creates. `OMP_BIN` defaults to `omp` on `PATH`.
+From the repo root, with the Node that `mise.toml` pins and omp installed. The tests run
+under vitest on Node. The unit tests import `@oh-my-pi/*` from `extension/dev/node_modules`
+through the `extension/node_modules` link that `make extension-deps` creates. Code that only
+runs inside omp's Bun (the OAuth login flows in `src/support/auth/login.ts`) is reached only
+through `index.ts`, so the unit tests never load it; the RPC suite exercises it inside a real
+omp. `OMP_BIN` defaults to `omp` on `PATH`.
 
 | Command | What it runs |
 | --- | --- |
-| `make test-extension OMP_BIN=$(command -v omp)` | Typecheck, unit tests, and the RPC suite that drives the extension inside `omp --mode rpc` against a fake skua-api and a fake OIDC issuer. Test files run in parallel workers and the tests inside a file run concurrently, so every test owns its fakes, temp dirs and omp process. |
-| `make extension-check OMP_BIN=$(command -v omp)` | Typecheck and unit tests only. |
-| `make test-extension-kind OMP_BIN=$(command -v omp)` | One login and one relayed run against the kind development cluster. |
+| `make test-extension OMP_BIN=$(command -v omp)` | Typecheck, lint, the `unit` vitest project (`*.spec.ts` beside the code in `src/`, and `test/fakes/fakes.spec.ts`), and the `rpc` project in `test/rpc/` that drives the extension inside `omp --mode rpc` against the fake skua-api and fake OIDC issuer in `test/fakes/`. Test files run in parallel workers and the tests inside a file run concurrently, so every test owns its fakes, temp dirs and omp process. |
+| `make extension-check` | Typecheck, lint and the `unit` project only. Needs no omp. |
+| `make extension-lint` | ESLint and `prettier --check` over `extension/`. |
+| `make test-extension-kind OMP_BIN=$(command -v omp)` | The `kind` project: one login and one relayed run against the kind development cluster. |
 
 The tests need no provider API key, no network host other than `127.0.0.1` (kind aside) and
 no stored omp credentials. Before the root Makefile exists, run the same targets as
 `make -f extension/extension.mk <target>`.
+
+## Lint and format
+
+The extension uses [gts](https://github.com/google/gts), Google's TypeScript style: ESLint 9
+with typescript-eslint and Prettier. `extension/eslint.config.js` adds typescript-eslint
+`strictTypeChecked` and `stylisticTypeChecked`, and these rules:
+
+- no `else` or `else if`; return early instead
+- blocks nest at most 3 deep, and a function's cyclomatic complexity is at most 10
+- no nested ternaries, no reassigned parameters, `const` where nothing reassigns
+- a non-test file in `src/`, and `index.ts`, has at most 300 lines, not counting blank lines
+  and comments
+
+`extension/tsconfig.json` sets `strict` plus `noUncheckedIndexedAccess`,
+`exactOptionalPropertyTypes`, `noImplicitReturns`, `noImplicitOverride`,
+`noFallthroughCasesInSwitch`, `noPropertyAccessFromIndexSignature`, `noUnusedLocals` and
+`noUnusedParameters`. Fix a finding by refactoring: early returns, named predicates and
+steps, small functions and domain types. A disable comment needs a one-line reason.
+
+From `extension/`, after `make extension-deps`:
+
+| Command | What it does |
+| --- | --- |
+| `dev/node_modules/.bin/eslint .` | Lint, the first half of `make extension-lint`. |
+| `dev/node_modules/.bin/eslint . --fix` | Apply the fixes ESLint can make on its own. |
+| `dev/node_modules/.bin/prettier --check .` | Check formatting, the second half of `make extension-lint`. |
+| `dev/node_modules/.bin/prettier --write .` | Format in place. Prettier reads the gts settings through `.prettierrc.json`. |
