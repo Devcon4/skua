@@ -1,0 +1,30 @@
+[tools]
+go = "1.27.3"
+golangci-lint = "2.15.0"
+helm = "4.3.1"
+kind = "0.33.0"
+kubectl = "1.37.2"
+kustomize = "5.8.3"
+flux2 = "2.10.0"
+shellcheck = "0.11.0"
+zizmor = "1.32.0"
+oh-my-pi = "18.16.0"
+"go:sigs.k8s.io/controller-tools/cmd/controller-gen" = "0.22.0"
+
+[tasks.build]
+run = "make build"
+
+[tasks.lint]
+run = "make lint"
+
+[tasks.test]
+run = "make test"
+
+[tasks.test-e2e]
+run = "make test-e2e"
+
+[tasks.kind-up]
+run = "make kind-up"
+
+[tasks.kind-down]
+run = "make kind-down"

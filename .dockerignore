@@ -1,0 +1,7 @@
+.git
+/bin/
+/cover.out
+/docs/
+/.agents/
+/.omp/
+**/node_modules

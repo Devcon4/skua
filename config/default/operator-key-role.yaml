@@ -1,0 +1,24 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: skua-operator-litellm-key
+  namespace: skua-system
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [skua-litellm-operator]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: skua-operator-litellm-key
+  namespace: skua-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: skua-operator-litellm-key
+subjects:
+  - kind: ServiceAccount
+    name: skua-operator
+    namespace: skua

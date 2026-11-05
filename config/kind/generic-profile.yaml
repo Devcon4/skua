@@ -1,0 +1,14 @@
+apiVersion: skua.dev/v1alpha1
+kind: AgentProfile
+metadata:
+  name: generic
+spec:
+  description: Generic agent image with git, gh, shells and omp.
+  image: skua-generic:dev
+  command: [omp, --mode, rpc, --no-ui]
+  models: [e2e-primary, e2e-helper]
+  forge: github
+  warmPool:
+    replicas: 1
+  limits:
+    maxRuntime: 30m

@@ -1,0 +1,25 @@
+apiVersion: skua.dev/v1alpha1
+kind: AgentProfile
+metadata:
+  name: generic
+spec:
+  description: Generic agent image with git, gh, shells and omp. Use when no language image fits.
+  image: registry.example/skua/skua-generic@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  adapter: omp-rpc
+  command: [omp, --mode, rpc, --no-ui]
+  models: [anthropic/claude-sonnet-5, anthropic/claude-haiku-4-5]
+  runtimeClassName: gvisor
+  resources:
+    requests:
+      cpu: "2"
+      memory: 4Gi
+  workspace:
+    size: 20Gi
+  warmPool:
+    replicas: 2
+  forge: github
+  limits:
+    budgetUSD: "10"
+    maxRuntime: 4h
+    maxRestarts: 3
+    maxResultBytes: 262144
