@@ -1,0 +1,7 @@
+name: upstream-429-then-ok
+match: "FAKELLM:upstream-429-then-ok"
+turns:
+  - fault:
+      status: 429
+      times: 1
+    text: Answered after one rate-limited attempt.

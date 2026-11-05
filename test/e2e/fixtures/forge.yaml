@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: skua-e2e-forge
+  namespace: skua-e2e
+  labels:
+    app: skua-e2e-forge
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: skua-e2e-forge
+  template:
+    metadata:
+      labels:
+        app: skua-e2e-forge
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: forge
+          image: skua-e2e-forge:dev
+          imagePullPolicy: IfNotPresent
+          args: ["--listen", ":8080", "--token-ttl", "20m"]
+          env:
+            - name: FORGE_APP_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: forge-app
+                  key: appPublicKey
+            - name: HOME
+              value: /tmp
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /_test/refs/e2e/sample
+              port: http
+            periodSeconds: 2
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 256Mi
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: skua-e2e-forge
+  namespace: skua-e2e
+  labels:
+    app: skua-e2e-forge
+spec:
+  selector:
+    app: skua-e2e-forge
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

@@ -1,0 +1,10 @@
+name: research-schema
+match: "FAKELLM:research-schema"
+turns:
+  - toolCalls:
+      - name: mcp__skua_submit_result
+        arguments:
+          title: Warm pools cut start latency
+          summary: Claims bound to a warm sandbox start the agent without waiting for a pod to schedule.
+          confidence: 0.8
+  - text: Submitted the result through submit_result.
