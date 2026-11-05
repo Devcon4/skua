@@ -1,0 +1,8 @@
+{
+  "name": "skua-omp-extension",
+  "private": true,
+  "type": "module",
+  "omp": {
+    "extensions": ["./index.ts"]
+  }
+}
