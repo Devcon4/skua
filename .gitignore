@@ -1,0 +1,7 @@
+/bin/
+/cover.out
+/dist/
+/config/kind/config.yaml
+/docs/scratch/*
+!/docs/scratch/AGENTS.md
+!/docs/scratch/*.proposal.md
